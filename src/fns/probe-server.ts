@@ -177,14 +177,22 @@ async function drainAfterClock(res: Response): Promise<void> {
   }
   const reader = body.getReader()
   let n = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) return
-    n += value?.byteLength || 0
-    if (n >= MAX_BODY_BYTES) {
-      await reader.cancel().catch(() => undefined)
-      return
+  try {
+    for (;;) {
+      // If the request's abort timer fires mid-drain (a target that sent headers
+      // then stalls the body), reader.read() rejects with AbortError; we swallow
+      // it — the latency clock already stopped at headers, so a truncated drain
+      // doesn't affect the measurement, it just frees the socket promptly.
+      const { done, value } = await reader.read()
+      if (done) return
+      n += value?.byteLength || 0
+      if (n >= MAX_BODY_BYTES) {
+        await reader.cancel().catch(() => undefined)
+        return
+      }
     }
+  } catch {
+    await reader.cancel().catch(() => undefined)
   }
 }
 
@@ -216,7 +224,11 @@ async function timedGet(url: string, timeoutMs: number): Promise<{ ms: number; n
       headers: { 'user-agent': 'cloudping.me-probe' },
     })
     const elapsed = performance.now() - start
-    clearTimeout(timer)
+    // Keep the abort timer ARMED through the drain: the latency clock has already
+    // stopped (elapsed captured at response headers), but a target that sends
+    // headers then stalls the body would otherwise hold this socket until
+    // undici's default 300s bodyTimeout. Letting the same timer abort the drain
+    // frees the slot within timeoutMs. The finally clears it once drain returns.
     await drainAfterClock(res)
     // Compare the counter after headers arrived: a fresh socket for this request
     // increments it, a reused one leaves it unchanged. undefined host → unknown.
