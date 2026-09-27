@@ -29,7 +29,15 @@ const server = createServer((req, res) => {
       return
     }
     try {
-      const snapshot = await runProbe(24)
+      // Match the AWS/Azure fleet default (12) instead of the old 24: Cloud Run
+      // runs on ~0.5 vCPU, and 24 concurrent workers saturate libuv DNS threads
+      // and TLS crypto, inflating marginal transoceanic requests past the 3s
+      // timeout (observed as 100% Linode-EU dropouts from gcp-asia-northeast3
+      // while lower-concurrency Azure origins in the same city succeeded).
+      // PROBE_CONCURRENCY overrides for operator A/B tests.
+      const parsed = Number(process.env.PROBE_CONCURRENCY)
+      const concurrency = Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 12
+      const snapshot = await runProbe(concurrency)
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
       res.end(JSON.stringify(snapshot))
     } catch (err) {
