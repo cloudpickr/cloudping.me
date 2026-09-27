@@ -2,7 +2,26 @@ import { getAllCloudRegions, getAllProviders } from '@app/data'
 import type { ProbeResult, ProbeSnapshot } from './probe-snapshot'
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 import diagnosticsChannel from 'node:diagnostics_channel'
+import { setDefaultResultOrder } from 'node:dns'
+import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net'
 import { withCacheBuster, MIN_PLAUSIBLE_MS } from './measure-core'
+
+// Global fetch (undici) connects via net's Happy Eyeballs, which tries the
+// resolved addresses one at a time and abandons each after the attempt timeout
+// (Node's default is 250ms). Linode object storage returns both A and AAAA
+// records; from GCP Cloud Run Seoul/Mumbai, IPv6 egress to Linode EU (and
+// br-gru) is silently blackholed, and the IPv4 RTT there is ~270-300ms — longer
+// than the 250ms attempt window — so every IPv4 attempt was killed before its
+// SYN-ACK arrived and the whole address walk outran the 3s probe timeout (curl,
+// which uses a longer Happy-Eyeballs timer, reached the same hosts in ~0.9s).
+// Fix, verified from GCP Seoul with plain global fetch: try IPv4 first and give
+// each attempt 750ms — longer than any real IPv4 RTT — so a dual-stack target
+// connects on the first IPv4 address (~0.85-1.05s, within budget), while an
+// AAAA-only host or a broken-IPv4 host still falls back to IPv6. Both are
+// process-wide Node built-ins, so nothing is added to the bundle. (All 343
+// current probe targets have an A record, so no target regresses.)
+setDefaultResultOrder('ipv4first')
+setDefaultAutoSelectFamilyAttemptTimeout(750)
 
 // --- cgroup v2 CPU-throttle reader (diagnostic only) ------------------------
 // Lambda (Amazon Linux 2023) caps a function's CPU with a cgroup v2 quota
