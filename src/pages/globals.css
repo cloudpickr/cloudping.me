@@ -435,18 +435,6 @@ button.matrix-swatch.is-off { opacity: 0.4; }
 [data-theme="dark"] .matrix-cell.slow { background: #7f1d1d; color: #fca5a5; }
 .matrix-cell.fail,
 .matrix-cell.empty { background: var(--bg-surface); color: var(--text-muted); }
-/* Latest-view fallback: cell failed this round but has a 24h median. Show it
-   greyed/italic so it reads as "recent value, not fresh" rather than a live min. */
-.matrix-cell-fallback {
-  color: var(--text-muted);
-  font-style: italic;
-  opacity: 0.75;
-}
-/* No history at all → genuinely unreachable from this origin. */
-.matrix-cell-unreachable {
-  color: var(--text-muted);
-  opacity: 0.5;
-}
 /* Band focus is driven by classes on the table (not per-cell React props), so
    toggling a legend band re-matches styles instead of re-rendering all cells.
    When a focus is active, dim every cell, then re-light the focused band(s),
