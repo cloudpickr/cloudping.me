@@ -243,6 +243,15 @@ const MatrixRow = React.memo(function MatrixRow({
         const band = cell ? latencyBand(displayMs, displayOk && displayMs != null) : 'empty'
         const isMark = kind === 'on-net' || kind === 'adjacent'
 
+        // Latest-view fallback: a cell that failed THIS round (displayMs null)
+        // but has 24h history shows that greyed median instead of a bare "—",
+        // so a persistent per-origin reachability failure reads as "recent value,
+        // unreachable now" rather than looking like a rendering glitch. A cell
+        // with no history at all is genuinely unreachable from this origin.
+        const failedLatest = Boolean(cell) && metric === 'latest' && displayMs == null
+        const fallbackMs = failedLatest ? (cell?.ms24h ?? null) : null
+        const unreachableNoHistory = failedLatest && fallbackMs == null
+
         // Compact mode skips the verbose per-cell tooltip/aria strings
         // entirely — on thousands of cells that string building is the
         // GC pressure we are cutting on low-end phones. We still give
@@ -252,10 +261,24 @@ const MatrixRow = React.memo(function MatrixRow({
         let ariaLabel: string
         let markTip: string | null = null
         if (compact) {
-          const short = !cell ? 'no sample' : displayMs == null ? 'unreachable' : formatMs(displayMs)
+          const short = !cell
+            ? 'no sample'
+            : displayMs != null
+              ? formatMs(displayMs)
+              : fallbackMs != null
+                ? `unreachable now (24h ${formatMs(fallbackMs)})`
+                : 'unreachable from this origin'
           ariaLabel = cell ? `${short}, open history` : short
         } else {
-          const failText = cell?.error === 'timeout' ? 'timeout' : cell?.error === 'network' ? 'network' : 'unreachable'
+          const failText = unreachableNoHistory
+            ? 'unreachable from this origin'
+            : fallbackMs != null
+              ? `unreachable this round · 24h ${formatMs(fallbackMs)} n=${cell?.n24h ?? '?'}`
+              : cell?.error === 'timeout'
+                ? 'timeout'
+                : cell?.error === 'network'
+                  ? 'network'
+                  : 'unreachable'
           const parts = [
             !cell
               ? 'no sample'
@@ -283,7 +306,19 @@ const MatrixRow = React.memo(function MatrixRow({
             title={title}
             aria-label={ariaLabel}
           >
-            {cell ? (displayMs == null ? '—' : formatMs(displayMs)) : '—'}
+            {cell ? (
+              displayMs != null ? (
+                formatMs(displayMs)
+              ) : fallbackMs != null ? (
+                <span className="matrix-cell-fallback">{formatMs(fallbackMs)}</span>
+              ) : (
+                <span className="matrix-cell-unreachable" aria-hidden="true">
+                  ⊘
+                </span>
+              )
+            ) : (
+              '—'
+            )}
             {cell && isMark ? <span className="matrix-mark" data-tip={markTip ?? undefined} aria-hidden="true" /> : null}
           </td>
         )
@@ -1303,7 +1338,8 @@ export default function Health(props: HealthProps): JSX.Element {
               carry a duplicate swatch beside a footnote that only pointed at it. */}
           <p className="matrix-footnote">
             Latest min = the fastest of up to 4 successful HTTP GETs to response headers after 2 warmups (at least 3 successes); 24h P50 is the median of
-            per-run values and may include older probe behavior. Click a cell for history.
+            per-run values and may include older probe behavior. A greyed italic value = unreachable this round, showing the 24h median; ⊘ = unreachable from
+            this origin (no recent success). Click a cell for history.
             {markKinds.onNet ? (
               <>
                 {' '}
