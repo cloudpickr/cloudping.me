@@ -1008,26 +1008,11 @@ export default function Health(props: HealthProps): JSX.Element {
               {columns.length ? ` (${columns.length})` : ''}. Fastest successful HTTP round-trip after warmup — not ICMP ping.
             </p>
             <p className="text-xs text-[color:var(--text-muted)]">
-              {snapshot ? (
-                <>
-                  {`Last updated ${formatUpdated(snapshot.at)}. Refreshed about every 30 minutes.`}
-                  <button
-                    type="button"
-                    className="matrix-refresh-btn"
-                    onClick={handleRefresh}
-                    disabled={refreshing}
-                    aria-label="Refresh latency values"
-                    title="Refresh latency values without reloading the page"
-                  >
-                    {refreshing ? 'Refreshing…' : 'Refresh'}
-                  </button>
-                  {loadError && !refreshing ? <span className="matrix-refresh-error"> · refresh failed ({loadError})</span> : null}
-                </>
-              ) : loadError ? (
-                `No probe snapshot yet (${loadError}). Run the Probe GitHub Action to publish the status branch.`
-              ) : (
-                'Loading latest probe snapshot…'
-              )}
+              {snapshot
+                ? `Last updated ${formatUpdated(snapshot.at)}. Refreshed about every 30 minutes.`
+                : loadError
+                  ? `No probe snapshot yet (${loadError}). Run the Probe GitHub Action to publish the status branch.`
+                  : 'Loading latest probe snapshot…'}
             </p>
           </div>
 
@@ -1217,6 +1202,19 @@ export default function Health(props: HealthProps): JSX.Element {
                   24h P50
                 </button>
               </div>
+              {snapshot ? (
+                <button
+                  type="button"
+                  className="matrix-refresh-btn"
+                  onClick={handleRefresh}
+                  disabled={refreshing}
+                  aria-label="Refresh latency values"
+                  title="Refresh latency values without reloading the page"
+                >
+                  {refreshing ? 'Refreshing…' : '↻ Refresh'}
+                </button>
+              ) : null}
+              {loadError && snapshot && !refreshing ? <span className="matrix-refresh-error">refresh failed ({loadError})</span> : null}
             </div>
             <div className="matrix-legend" role="group" aria-label="Latency color scale — click a band to focus it">
               <span className="matrix-legend-label">Latency:</span>
