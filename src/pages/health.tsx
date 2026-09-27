@@ -671,6 +671,10 @@ export default function Health(props: HealthProps): JSX.Element {
     selectedFromContinents: string[] | null
   }>({ snapshot: null, selectedFromContinents: null })
   const [loadError, setLoadError] = useState<string | null>(null)
+  // Whether a values-only refresh (manual button or the 30-min auto timer) is
+  // in flight. Distinct from the initial load (snapshot === null) so the button
+  // can show progress without blanking the matrix.
+  const [refreshing, setRefreshing] = useState(false)
   const [selectedProviders, setSelectedProviders] = useState(props.providers.map((p) => p.key))
   // Continent selection is derived from selectedKeys (see geoAllSelected /
   // toggleGeo), not stored separately — so checking/unchecking individual
@@ -709,10 +713,14 @@ export default function Health(props: HealthProps): JSX.Element {
     return () => mql.removeEventListener('change', apply)
   }, [])
 
-  useEffect(() => {
-    const controller = new AbortController()
-    setLoadError(null)
-    fetch('/api/health-matrix', { signal: controller.signal })
+  // Fetch the latest published probe snapshot and swap only the matrix values
+  // into state. Shared by the initial mount load, the manual refresh button, and
+  // the 30-minute auto-refresh timer. `isInitial` gates the one-time client-geo
+  // continent default so a refresh never clobbers the user's continent choice.
+  const loadMatrix = useCallback((opts?: { isInitial?: boolean; signal?: AbortSignal }) => {
+    const isInitial = opts?.isInitial ?? false
+    if (!isInitial) setRefreshing(true)
+    return fetch('/api/health-matrix', { signal: opts?.signal, cache: 'no-store' })
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json()
@@ -720,18 +728,79 @@ export default function Health(props: HealthProps): JSX.Element {
       .then((data) => {
         const matrix = normalizeCompactMatrixSnapshot(data)
         if (!matrix) throw new Error('unexpected snapshot shape')
-        const availableContinents = new Set(Object.values(matrix.from).map((column) => originContinent(column)))
-        const initialContinent = detectClientGeo(availableContinents)
-        setMatrixState({
-          snapshot: matrix,
-          selectedFromContinents: initialContinent && availableContinents.has(initialContinent) ? [initialContinent] : null,
+        setLoadError(null)
+        setMatrixState((prev) => {
+          // On the first load, pick the viewer's continent. On refresh, keep
+          // whatever the user has selected (and every other filter is separate
+          // state, so a values swap leaves the UI selection intact).
+          if (isInitial) {
+            const availableContinents = new Set(Object.values(matrix.from).map((column) => originContinent(column)))
+            const initialContinent = detectClientGeo(availableContinents)
+            return {
+              snapshot: matrix,
+              selectedFromContinents: initialContinent && availableContinents.has(initialContinent) ? [initialContinent] : null,
+            }
+          }
+          return { snapshot: matrix, selectedFromContinents: prev.selectedFromContinents }
         })
       })
       .catch((err: Error) => {
+        // On refresh, keep the existing values and surface a soft error; on the
+        // initial load there's nothing to keep, so the empty-state message shows.
         if (err.name !== 'AbortError') setLoadError(err.message || 'failed to load')
       })
-    return () => controller.abort()
+      .finally(() => {
+        if (!isInitial) setRefreshing(false)
+      })
   }, [])
+
+  // Initial load.
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoadError(null)
+    loadMatrix({ isInitial: true, signal: controller.signal })
+    return () => controller.abort()
+  }, [loadMatrix])
+
+  // Manual "refresh values" action (button). Ignores overlapping clicks.
+  const handleRefresh = useCallback(() => {
+    if (refreshing) return
+    loadMatrix()
+  }, [loadMatrix, refreshing])
+
+  // Auto-refresh: the server probe publishes ~every 30 min, so schedule the next
+  // values reload for 30 min after the CURRENT snapshot's timestamp (+90s buffer
+  // so we fetch just after the new snapshot lands, not just before). Re-anchors
+  // whenever snapshot.at changes. Only fires on a visible tab; if the tab was
+  // hidden past the due time, it refreshes on return.
+  useEffect(() => {
+    if (!snapshot?.at) return
+    const REFRESH_INTERVAL_MS = 30 * 60 * 1000
+    const BUFFER_MS = 90 * 1000
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const schedule = () => {
+      const dueAt = new Date(snapshot.at).getTime() + REFRESH_INTERVAL_MS + BUFFER_MS
+      const delay = Math.max(0, dueAt - Date.now())
+      timer = setTimeout(() => {
+        if (document.visibilityState === 'visible') loadMatrix()
+        // If hidden, the visibilitychange handler below refreshes on return.
+      }, delay)
+    }
+
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      const dueAt = new Date(snapshot.at).getTime() + REFRESH_INTERVAL_MS + BUFFER_MS
+      if (Date.now() >= dueAt) loadMatrix()
+    }
+
+    schedule()
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      if (timer) clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [snapshot?.at, loadMatrix])
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark'
@@ -939,11 +1008,26 @@ export default function Health(props: HealthProps): JSX.Element {
               {columns.length ? ` (${columns.length})` : ''}. Fastest successful HTTP round-trip after warmup — not ICMP ping.
             </p>
             <p className="text-xs text-[color:var(--text-muted)]">
-              {snapshot
-                ? `Last updated ${formatUpdated(snapshot.at)}. Refreshed about every 30 minutes.`
-                : loadError
-                  ? `No probe snapshot yet (${loadError}). Run the Probe GitHub Action to publish the status branch.`
-                  : 'Loading latest probe snapshot…'}
+              {snapshot ? (
+                <>
+                  {`Last updated ${formatUpdated(snapshot.at)}. Refreshed about every 30 minutes.`}
+                  <button
+                    type="button"
+                    className="matrix-refresh-btn"
+                    onClick={handleRefresh}
+                    disabled={refreshing}
+                    aria-label="Refresh latency values"
+                    title="Refresh latency values without reloading the page"
+                  >
+                    {refreshing ? 'Refreshing…' : 'Refresh'}
+                  </button>
+                  {loadError && !refreshing ? <span className="matrix-refresh-error"> · refresh failed ({loadError})</span> : null}
+                </>
+              ) : loadError ? (
+                `No probe snapshot yet (${loadError}). Run the Probe GitHub Action to publish the status branch.`
+              ) : (
+                'Loading latest probe snapshot…'
+              )}
             </p>
           </div>
 
