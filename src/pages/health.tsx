@@ -1206,26 +1206,26 @@ export default function Health(props: HealthProps): JSX.Element {
             <div className="matrix-toolbar-right">
               <div className="matrix-legend" role="group" aria-label="Latency color scale — click a band to focus it">
                 <span className="matrix-legend-label">Latency:</span>
-              {LEGEND_BANDS.map((b) => {
-                const on = focusBands.includes(b.key)
-                return (
-                  <button
-                    key={b.key}
-                    type="button"
-                    className={`matrix-swatch ${b.key}${focusBands.length > 0 && !on ? ' is-off' : ''}`}
-                    aria-pressed={on}
-                    onClick={() => toggleBand(b.key)}
-                    title={on ? `Stop focusing ${b.label}` : `Focus ${b.label} cells`}
-                  >
-                    {b.label}
+                {LEGEND_BANDS.map((b) => {
+                  const on = focusBands.includes(b.key)
+                  return (
+                    <button
+                      key={b.key}
+                      type="button"
+                      className={`matrix-swatch ${b.key}${focusBands.length > 0 && !on ? ' is-off' : ''}`}
+                      aria-pressed={on}
+                      onClick={() => toggleBand(b.key)}
+                      title={on ? `Stop focusing ${b.label}` : `Focus ${b.label} cells`}
+                    >
+                      {b.label}
+                    </button>
+                  )
+                })}
+                {focusBands.length > 0 ? (
+                  <button type="button" className="matrix-legend-clear" onClick={() => setFocusBands([])}>
+                    Clear
                   </button>
-                )
-              })}
-              {focusBands.length > 0 ? (
-                <button type="button" className="matrix-legend-clear" onClick={() => setFocusBands([])}>
-                  Clear
-                </button>
-              ) : null}
+                ) : null}
               </div>
               {snapshot ? (
                 <div className="matrix-toolbar-refresh">
