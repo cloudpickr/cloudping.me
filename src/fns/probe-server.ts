@@ -108,7 +108,7 @@ const CHINA_TIMEOUT_MS = 2000
 // several times higher. Fix: after the pool drains, re-measure the nearest cells
 // SERIALLY (no fan-out => no parking, same principle as the self-cell fix) and
 // keep min(pool, serial) since parking only ever inflates.
-const NEAR_CELL_THRESHOLD_MS = 40
+const NEAR_CELL_THRESHOLD_MS = 60
 // We re-measure EVERY near cell (no early budget cutoff): the accuracy of small
 // values matters and the cost is tiny (~123ms/cell; even the densest origin,
 // ~78 sub-40ms neighbours in Europe, adds only ~9s/round ≈ +$0.16/month over the
@@ -120,6 +120,19 @@ const REMEASURE_SAFETY_CAP_MS = 120_000
 // warmup + 3 timed re-establishes/confirms it and still meets MIN_SAMPLES=3.
 const REMEASURE_WARMUP = 1
 const REMEASURE_SAMPLES = 3
+// The self-cell (origin's own region) is measured on its own after the pool, not
+// in the fan-out and not gated on any threshold. It's the value most inflated by
+// CPU parking relative to its true ~2-3ms, so it gets the full 2 warmup + 4 timed
+// treatment for the best chance at a clean minimum.
+const SELF_WARMUP = 2
+const SELF_SAMPLES = 4
+// Idle gap between the pool draining and the serial measurements. On the ~0.28
+// vCPU Lambda the pool can leave the current CFS quota window (~100ms period)
+// near-exhausted, plus libuv socket teardown / V8 GC from the 344-cell fan-out is
+// still queued. Yielding one quota period before the uncontended serial pass lets
+// that drain so the first serial samples aren't parked by the pool's tail. Costs
+// ~100ms wall (~0.2% of a round), ~0 CPU.
+const POST_POOL_SETTLE_MS = 100
 
 // Tracks whether a round has already entered this module instance. This is a
 // proxy, not proof: it only says "a prior runProbe() call started here", not
@@ -277,7 +290,7 @@ async function pingTarget(
     // is already known to be a failure. Avoid up to two more doomed requests;
     // this preserves the existing success rule while reducing socket churn and
     // worst-case round duration on constrained probe origins.
-    const remaining = SAMPLE_COUNT - i - 1
+    const remaining = sampleCount - i - 1
     if (samples.length + remaining < MIN_SAMPLES) break
   }
   if (samples.length < MIN_SAMPLES) return { error: lastError }
@@ -363,14 +376,21 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
       }
       const out = await pingTarget(job.region.ping_url, timeoutMs)
       if ('error' in out) return { ...base, error: out.error }
-      // Capture the self-cell's per-sample raw here as a fallback; the near-cell
-      // serial re-measure pass runs self first and overwrites this with the
-      // uncontended raw, which is what the self-probe diagnostic ultimately logs.
-      if (origin && `${job.provider}-${job.region.key}` === origin.id) selfRaw = out.raw
       return { ...base, ms: out.ms, ok: true, samples: out.samples }
     }
 
     origin = resolveOrigin()
+
+    // Exclude the self-cell (origin measuring its own region) from the concurrent
+    // fan-out entirely and measure it alone after the pool (see the serial pass
+    // below). On the ~0.28 vCPU Lambda, running self among 12 concurrent targets
+    // means ~half of rounds its samples get CPU-parked to 40-300ms; a pooled self
+    // reading is never trustworthy, so there's no point spending 6 requests on it
+    // in the most congested phase. This restores the #63 guarantee that #66/#67
+    // accidentally regressed (folding self into a pool-value-gated near-cell set
+    // let a parked self fall above the threshold and never get re-measured).
+    const selfIndex = jobs.findIndex((j) => `${j.provider}-${j.region.key}` === origin!.id)
+    const poolJobs = selfIndex >= 0 ? jobs.filter((_, i) => i !== selfIndex) : jobs
 
     // Instrument event-loop lag across the whole measurement pass. If the leading
     // hypothesis is right (fan-out TLS/socket callbacks starving the small Lambda's
@@ -381,62 +401,97 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
     const eld = monitorEventLoopDelay({ resolution: 20 })
     eld.enable()
     // Measure CPU starvation across the fan-out (see the diagnostic helpers up
-    // top). Two independent signals, both dependency-free and Lambda-safe since
-    // cgroup files are unavailable:
-    //   (a) process.cpuUsage() + wall clock around the pool → utilization ratio.
-    //   (b) spin probes running CONCURRENTLY with the pool → per-probe wall/cpu
-    //       inflation, which is direct evidence of the process being parked.
+    // top). process.cpuUsage() + wall clock around the pool give a utilization
+    // ratio; the optional spin sampler adds direct per-probe wall/cpu inflation.
+    // The spin sampler is OFF by default: it burns ~3M iterations every 50ms,
+    // which is ~15-20% of the 512MB Lambda's CFS quota and actively worsens the
+    // very parking it measures. It already proved the CPU-parking thesis (#65),
+    // so gate it behind PROBE_CPU_DIAGNOSTIC=1 for one-off investigations only.
     const cpuBefore = process.cpuUsage()
     const wallBefore = performance.now()
-    // Self-scheduling spin sampler: yields between probes so it rides the same
-    // event loop as the fan-out (feeling the same parking) without blocking it.
-    // Bounded count keeps CPU/GB-seconds cost negligible. Stops when the pool
-    // signals completion via `poolDone`.
+    const spinEnabled = process.env.PROBE_CPU_DIAGNOSTIC === '1'
     let poolDone = false
     let spinWorstInflation = 1
     let spinSamples = 0
     let spinMaxWallMs = 0
-    const spinSampler = (async () => {
-      // ~several ms of synchronous work per spin so process.cpuUsage()'s ~1ms
-      // granularity doesn't dominate the wall/cpu ratio. The exact size doesn't
-      // matter (the metric is the scale-invariant ratio); it just needs to be
-      // comfortably above timer granularity on the ~0.28 vCPU Lambda.
-      const ITER = 3_000_000
-      while (!poolDone && spinSamples < 200) {
-        const { wallMs, cpuMs } = spinOnce(ITER)
-        spinSamples++
-        // Inflation = how much longer the spin took in wall time than the CPU it
-        // actually burned. ~1 means no parking; >>1 means the process was
-        // descheduled mid-spin (CPU throttling / contention).
-        if (cpuMs > 0.05) spinWorstInflation = Math.max(spinWorstInflation, wallMs / cpuMs)
-        spinMaxWallMs = Math.max(spinMaxWallMs, wallMs)
-        // Yield ~50ms between spins so the sampler is light and spread across the round.
-        await new Promise((r) => setTimeout(r, 50))
-      }
-    })()
-    const poolResults = await mapPool(jobs, concurrency, measureJob)
+    const spinSampler = spinEnabled
+      ? (async () => {
+          const ITER = 3_000_000
+          while (!poolDone && spinSamples < 200) {
+            const { wallMs, cpuMs } = spinOnce(ITER)
+            spinSamples++
+            if (cpuMs > 0.05) spinWorstInflation = Math.max(spinWorstInflation, wallMs / cpuMs)
+            spinMaxWallMs = Math.max(spinMaxWallMs, wallMs)
+            await new Promise((r) => setTimeout(r, 50))
+          }
+        })()
+      : Promise.resolve()
+    const poolResults = await mapPool(poolJobs, concurrency, measureJob)
     poolDone = true
     await spinSampler
     const cpuDelta = process.cpuUsage(cpuBefore)
     const poolWallMs = performance.now() - wallBefore
     eld.disable()
 
-    // --- Near-cell serial re-measure pass -----------------------------------
-    // Every near cell (pool ms below the threshold) was measured inside the
-    // concurrent fan-out, where intermittent CPU parking inflates small values.
-    // Re-measure the nearest ones SERIALLY now that the pool has drained (a quiet
-    // event loop, no competing TLS bursts), lowest-value-first, until a wall-time
-    // budget is spent, and keep min(pool, serial): parking only inflates, so the
-    // lower of the two readings is always the more accurate. The self-cell (origin
-    // measuring its own region, the smallest value of all) is just the first
-    // entry in this set — no longer special-cased. Far cells are left untouched:
-    // a fixed ~tens-of-ms park is within noise on a 150ms+ path, and re-measuring
-    // them would add cost for no accuracy gain. ALL near cells are re-measured
-    // (no early cutoff); only the generous safety cap can stop the loop.
-    const results = [...poolResults]
+    // Settle gap: let the pool's socket teardown / GC drain and the CFS quota
+    // window roll over before the uncontended serial measurements, so the first
+    // serial samples aren't parked by the fan-out's tail.
+    await new Promise((r) => setTimeout(r, POST_POOL_SETTLE_MS))
+
+    // Measure the self-cell ALONE, serially, unconditionally (never threshold-
+    // gated). Full 2 warmup + 4 timed on the quiet loop for the cleanest minimum.
+    // Computed BEFORE assembling `results` so the array is never in a partial
+    // state (no null placeholder to leak on an unexpected throw).
+    let selfCellResult: ProbeResult | undefined
+    if (selfIndex >= 0) {
+      const selfJob = jobs[selfIndex]
+      const base: ProbeResult = {
+        provider: selfJob.provider,
+        region: selfJob.region.key,
+        location: selfJob.region.location,
+        country: selfJob.region.country,
+        geo: selfJob.region.geo,
+        ms: null,
+        ok: false,
+      }
+      const timeoutMs = isChinaTarget(selfJob.region.country, selfJob.region.ping_url) ? CHINA_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
+      const out = await pingTarget(selfJob.region.ping_url, timeoutMs, { warmupCount: SELF_WARMUP, sampleCount: SELF_SAMPLES })
+      if ('error' in out) {
+        selfCellResult = { ...base, error: out.error }
+      } else {
+        selfRaw = out.raw
+        selfCellResult = { ...base, ms: out.ms, ok: true, samples: out.samples }
+      }
+    }
+
+    // Reassemble catalog order: poolResults covers every non-self job in order,
+    // so splicing the (fully-measured) self result back at selfIndex restores the
+    // original indexing (position-based round diagnostics and snapshot column
+    // order stay stable). No transient null entry ever exists in `results`.
+    const results: ProbeResult[] =
+      selfIndex >= 0 && selfCellResult ? [...poolResults.slice(0, selfIndex), selfCellResult, ...poolResults.slice(selfIndex)] : [...poolResults]
+
+    // --- Near-cell serial re-measure pass (off-diagonal) --------------------
+    // The self-cell is already measured serially above. Now refine the OTHER near
+    // cells that rode the concurrent fan-out, where CPU parking inflates small
+    // values. Re-measure serially on the now-quiet loop and keep min(pool,serial):
+    // parking only inflates, so the lower reading is the more accurate one.
+    //
+    // A cell is a candidate if its pool ms is below the threshold OR it's in the
+    // same country as the origin (a geographic prior). The country prior is the
+    // key fix for the #66/#67 regression: parking can inflate a truly-near cell's
+    // pool value ABOVE the threshold, which would wrongly exclude it from the very
+    // pass meant to correct it. Static catalog geography can't be inflated, so a
+    // same-country cell (e.g. AWS Seoul → GCP Seoul) is always re-measured. Far
+    // cells are left untouched: a fixed ~tens-of-ms park is noise on a 150ms+ path.
+    const originCountry = selfIndex >= 0 ? jobs[selfIndex].region.country : undefined
     const nearIdx = results
       .map((r, i) => ({ r, i }))
-      .filter(({ r }) => r.ok && typeof r.ms === 'number' && r.ms < NEAR_CELL_THRESHOLD_MS)
+      .filter(({ r, i }) => {
+        if (i === selfIndex) return false // already measured serially above
+        if (!r.ok || typeof r.ms !== 'number') return false
+        return r.ms < NEAR_CELL_THRESHOLD_MS || (!!originCountry && r.country === originCountry)
+      })
       .sort((a, b) => (a.r.ms as number) - (b.r.ms as number))
       .map(({ i }) => i)
 
@@ -464,8 +519,6 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
           remeasureImproved++
           results[i] = { ...results[i], ms: out.ms, samples: out.samples }
         }
-        // Capture the self-cell's serial raw for the self-probe diagnostic log.
-        if (origin && `${job.provider}-${job.region.key}` === origin.id) selfRaw = out.raw
       }
     }
     const remeasureSpentMs = Number((performance.now() - remeasureStart).toFixed(0))
@@ -498,16 +551,19 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
     }
 
     // Observability for the near-cell serial re-measure pass: how many near cells
-    // Observability for the near-cell serial re-measure pass: how many near cells
     // there were, how many we re-measured (normally all of them), how many the
     // serial reading improved (min beat the pool value), the wall time it cost,
-    // and whether the safety cap fired (should always be false).
+    // and whether the safety cap fired (should always be false). `selfMs` is the
+    // self-cell's final (serially-measured) value, surfaced here so a future
+    // self regression is visible in one line without cross-referencing.
+    const selfMsFinal = selfIndex >= 0 ? (results[selfIndex]?.ms ?? null) : null
     const nearCellRemeasure = {
       candidates: nearIdx.length,
       remeasured,
       improved: remeasureImproved,
       spentMs: remeasureSpentMs,
       cappedOut: remeasureCappedOut,
+      selfMs: selfMsFinal,
     }
 
     // Observability for probe_disabled recovery: how many rechecks we attempted
