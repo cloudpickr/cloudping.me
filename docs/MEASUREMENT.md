@@ -54,25 +54,28 @@ Deliberately **not** shared:
   A browser page-load budget (fast, cheap on battery/data) and a serverless
   probe round (thorough, bounded GB-seconds) want different values, so these
   stay with each caller rather than in the shared core.
-- **Near cells re-measured serially (server only)** — every cell whose pooled
-  latency is under a threshold (the matrix diagonal and other nearby regions) is
-  re-measured on its own, lowest-value-first, after the concurrent fan-out drains;
-  the reported value is `min(pool, serial)`. On a small (~0.28 vCPU) Lambda the
-  fan-out intermittently exhausts the CPU quota, and the kernel parks the whole
-  process for tens of ms; `performance.now()` elapsed absorbs that wait even on a
-  warm, reused socket (confirmed by a spin probe that saw 4–5× wall/CPU inflation,
-  and by per-sample instrumentation showing the slow samples reused their socket).
-  That park adds a roughly fixed number of ms, so it barely dents far cells
-  (150 ms+) but inflates near cells (true 3–30 ms) by 2–6×. Re-measuring them
-  alone, on a quiet loop, restores the true value; the min-only update keeps it
-  monotonic (a serial reading can only lower a value, never raise it). Every near
-  cell is re-measured — the cost is small (~0.1 s/cell, a few seconds per round)
-  and only a generous safety cap guards against a pathological round. Near cells
-  are therefore measured differently from far cells — the diagonal and same-metro
-  cells are already flagged "on-net" (non-comparable) in the `/health` UI. It is
-  deliberately a POST-pass, not a pre-pass: a pre-pass was tried and reverted
-  because the first outbound call also pays the invocation's startup
-  JIT/network-path-init cost.
+- **Self-cell and near cells measured serially, off the fan-out (server only)**
+  — the self-cell (origin's own region) is pulled out of the concurrent pool
+  entirely and measured alone after it drains; every other near cell (pooled
+  latency under a threshold, OR in the same country as the origin) is then
+  re-measured serially too, keeping `min(pool, serial)`. On a small (~0.28 vCPU)
+  Lambda the 12-way fan-out intermittently exhausts the CFS CPU quota and parks
+  the whole process for tens of ms; `performance.now()` elapsed absorbs that wait
+  even on a warm socket (confirmed by a spin probe: 4–5× wall/CPU inflation).
+  That park adds a roughly fixed offset, so it barely dents far cells (150 ms+)
+  but inflates near cells (true 3–30 ms) by 2–6×. Measuring them alone on a quiet
+  loop restores the true value; the min-only update is monotonic (a serial
+  reading can only lower a value). The candidate gate deliberately includes a
+  geographic prior (same country) as well as the pooled-latency threshold:
+  parking can inflate a truly-near cell's pooled value ABOVE the threshold, and
+  gating purely on that contaminated value would wrongly exclude it from the very
+  pass meant to correct it — a regression that once silently reappeared. A short
+  settle gap precedes the serial passes so the pool's socket-teardown/GC tail
+  doesn't park the first serial samples. It is deliberately a POST-pass, not a
+  pre-pass: a pre-pass was reverted because the first outbound call also pays the
+  invocation's startup JIT/network-path-init cost. Near cells are therefore
+  measured differently from far cells — the diagonal and same-metro cells are
+  already flagged "on-net" (non-comparable) in the `/health` UI.
 
 
 ## Rationale
