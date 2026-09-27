@@ -551,6 +551,12 @@ button.matrix-swatch.is-off { opacity: 0.4; }
   box-shadow: 1px 0 0 var(--border);
 }
 .matrix-to code { font-size: 12px; color: var(--text); }
+.matrix-toolbar-refresh {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
 .matrix-refresh-btn {
   align-self: center;
   padding: 4px 12px;
