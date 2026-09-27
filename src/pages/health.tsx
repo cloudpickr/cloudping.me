@@ -1203,8 +1203,9 @@ export default function Health(props: HealthProps): JSX.Element {
                 </button>
               </div>
             </div>
-            <div className="matrix-legend" role="group" aria-label="Latency color scale — click a band to focus it">
-              <span className="matrix-legend-label">Latency:</span>
+            <div className="matrix-toolbar-right">
+              <div className="matrix-legend" role="group" aria-label="Latency color scale — click a band to focus it">
+                <span className="matrix-legend-label">Latency:</span>
               {LEGEND_BANDS.map((b) => {
                 const on = focusBands.includes(b.key)
                 return (
@@ -1225,22 +1226,23 @@ export default function Health(props: HealthProps): JSX.Element {
                   Clear
                 </button>
               ) : null}
-            </div>
-            {snapshot ? (
-              <div className="matrix-toolbar-refresh">
-                {loadError && !refreshing ? <span className="matrix-refresh-error">refresh failed ({loadError})</span> : null}
-                <button
-                  type="button"
-                  className="matrix-refresh-btn"
-                  onClick={handleRefresh}
-                  disabled={refreshing}
-                  aria-label="Refresh latency values"
-                  title="Refresh latency values without reloading the page"
-                >
-                  {refreshing ? 'Refreshing…' : '↻ Refresh'}
-                </button>
               </div>
-            ) : null}
+              {snapshot ? (
+                <div className="matrix-toolbar-refresh">
+                  {loadError && !refreshing ? <span className="matrix-refresh-error">refresh failed ({loadError})</span> : null}
+                  <button
+                    type="button"
+                    className="matrix-refresh-btn"
+                    onClick={handleRefresh}
+                    disabled={refreshing}
+                    aria-label="Refresh latency values"
+                    title="Refresh latency values without reloading the page"
+                  >
+                    {refreshing ? 'Refreshing…' : '↻ Refresh'}
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
           <div className="matrix-scroll" role="region" aria-label="Cloud latency matrix" tabIndex={0}>
             {rows.length === 0 || visibleColumns.length === 0 ? (
