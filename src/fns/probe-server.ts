@@ -438,15 +438,11 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
     // serial samples aren't parked by the fan-out's tail.
     await new Promise((r) => setTimeout(r, POST_POOL_SETTLE_MS))
 
-    // Reassemble catalog order: poolResults covers every non-self job in order,
-    // so inserting the self slot back at selfIndex restores the original indexing
-    // (position-based round diagnostics and snapshot column order stay stable).
-    // The self slot is filled by the serial measurement just below.
-    const results: ProbeResult[] =
-      selfIndex >= 0 ? [...poolResults.slice(0, selfIndex), null as unknown as ProbeResult, ...poolResults.slice(selfIndex)] : [...poolResults]
-
     // Measure the self-cell ALONE, serially, unconditionally (never threshold-
     // gated). Full 2 warmup + 4 timed on the quiet loop for the cleanest minimum.
+    // Computed BEFORE assembling `results` so the array is never in a partial
+    // state (no null placeholder to leak on an unexpected throw).
+    let selfCellResult: ProbeResult | undefined
     if (selfIndex >= 0) {
       const selfJob = jobs[selfIndex]
       const base: ProbeResult = {
@@ -461,12 +457,19 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
       const timeoutMs = isChinaTarget(selfJob.region.country, selfJob.region.ping_url) ? CHINA_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
       const out = await pingTarget(selfJob.region.ping_url, timeoutMs, { warmupCount: SELF_WARMUP, sampleCount: SELF_SAMPLES })
       if ('error' in out) {
-        results[selfIndex] = { ...base, error: out.error }
+        selfCellResult = { ...base, error: out.error }
       } else {
         selfRaw = out.raw
-        results[selfIndex] = { ...base, ms: out.ms, ok: true, samples: out.samples }
+        selfCellResult = { ...base, ms: out.ms, ok: true, samples: out.samples }
       }
     }
+
+    // Reassemble catalog order: poolResults covers every non-self job in order,
+    // so splicing the (fully-measured) self result back at selfIndex restores the
+    // original indexing (position-based round diagnostics and snapshot column
+    // order stay stable). No transient null entry ever exists in `results`.
+    const results: ProbeResult[] =
+      selfIndex >= 0 && selfCellResult ? [...poolResults.slice(0, selfIndex), selfCellResult, ...poolResults.slice(selfIndex)] : [...poolResults]
 
     // --- Near-cell serial re-measure pass (off-diagonal) --------------------
     // The self-cell is already measured serially above. Now refine the OTHER near
