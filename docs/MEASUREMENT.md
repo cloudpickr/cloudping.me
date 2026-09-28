@@ -48,8 +48,19 @@ Deliberately **not** shared:
   |---|---|---|
   | warmup requests | 1 | 2 |
   | timed samples per round | 1 | 4 |
-  | timeout | 8000 ms | 3000 ms (China 2000 ms) |
+  | timeout | 8000 ms | 3000 ms (first warmup request 7000 ms) |
   | reported statistic | p50 / p80 / p95 | fastest (min); 24h P50 for the 24h view |
+
+  The server timeout is a uniform 3000 ms per request, with one exception: the
+  **first warmup request** of a round gets a larger `COLD_CONNECT_TIMEOUT_MS`
+  (7000 ms) budget (`Math.max(timeoutMs, COLD_CONNECT_TIMEOUT_MS)`). Ultra-long
+  antipodal paths (e.g. Tokyo/Sydney → Oracle Valparaíso, >25,000 km with no
+  direct South-Pacific cable) need ~5.5 s to complete the cold TLS+TCP
+  handshake; aborting at 3 s destroyed the socket before the handshake finished,
+  so every round failed. Widening only the first warmup lets the connection pool
+  warm once with a generous budget, after which all timed samples still use the
+  tight 3000 ms timeout — so reported latencies stay accurate (a real warm RTT,
+  not the cold-connect time).
 
   A browser page-load budget (fast, cheap on battery/data) and a serverless
   probe round (thorough, bounded GB-seconds) want different values, so these
