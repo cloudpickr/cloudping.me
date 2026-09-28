@@ -925,15 +925,18 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
       }
     })
 
-    // --- China blackhole detector (diagnostic only) -------------------------
+    // --- China mainland-reachability detector (diagnostic only) -------------
     // True when the round attempted mainland-China targets, ALL of them failed,
-    // and at least one Hong Kong control succeeded. That exact shape is the
-    // GFW-blackhole signature the cross-review identified: a process-wide CPU
-    // park or a local network fault would also take Hong Kong down, so an
-    // all-mainland-down / HK-up round isolates the firewall border as the cause.
-    // Paired with egressIp below, production logs can then show whether these
-    // rounds recur on specific Lambda egress IPs — the evidence needed before
-    // committing to an operational fix (container recycling / re-invoke).
+    // and at least one Hong Kong control succeeded. That shape localizes the
+    // problem to the mainland path specifically: a process-wide CPU park or a
+    // local origin-wide network fault would also take Hong Kong down, so an
+    // all-mainland-down / HK-up round points at something on the origin→mainland
+    // route rather than the origin itself. It does NOT by itself prove WHICH
+    // network drops the traffic (GFW blocklist, transit loss, source-prefix
+    // filtering, congestion are all consistent) — the stage diagnostic below
+    // (DNS vs raw SYN vs TLS) narrows the failing LAYER, and egressIp records
+    // the source address, but attribution to a specific operator stays
+    // suspected, not proven. Kept as observational signal, not a causal verdict.
     const mainlandResults = results.filter(isMainlandChina)
     const hkResults = results.filter(isHongKong)
     const mainlandOk = mainlandResults.filter((r) => r.ok).length
