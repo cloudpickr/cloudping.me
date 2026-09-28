@@ -4,6 +4,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks'
 import diagnosticsChannel from 'node:diagnostics_channel'
 import { setDefaultResultOrder, lookup as dnsLookup } from 'node:dns'
 import { setDefaultAutoSelectFamilyAttemptTimeout, connect as netConnect } from 'node:net'
+import { connect as tlsConnect } from 'node:tls'
 import { withCacheBuster, MIN_PLAUSIBLE_MS } from './measure-core'
 
 // Global fetch (undici) connects via net's Happy Eyeballs, which tries the
@@ -159,23 +160,55 @@ function isHongKong(r: ProbeResult): boolean {
 //     the same abort timer so it also surfaces as `timeout`): the DNS resolve
 //     hangs but a raw SYN to a literal IP connects fine. Fix space: pin/pre-
 //     resolve addresses — a completely different, deterministic change.
-//   • SNI/TLS filtering: SYN connects, TLS handshake is reset. (cause.code shows
-//     a reset rather than a timeout.)
+//   • SNI/TLS filtering: SYN connects, TLS handshake with the real SNI is reset
+//     (RST/ECONNRESET) or hangs, even though the raw SYN succeeded.
 // Run ONLY when cnBlackhole is already true (never on healthy rounds, so zero
 // steady-state overhead), against ONE mainland host, fully time-bounded and
 // wrapped so it can neither fail nor meaningfully slow the round. Separates the
 // stages so the next fix is chosen on observation, not on another guess.
+//
+// Two review-driven refinements (Codex P1):
+//  1. The SYN stage MUST NOT depend on the DNS lookup being diagnosed — if DNS
+//     is the failing stage, dns.ip is null and a DNS-gated SYN would be skipped,
+//     making a resolver stall indistinguishable from a network blackhole. So the
+//     SYN runs against a STATIC known-mainland IP literal (no DNS at all); it
+//     proves whether literal-IP networking to the mainland works regardless of
+//     the resolver. (A blackhole drops SYNs to the whole mainland, so the exact
+//     host behind the literal is irrelevant; a stale-but-real mainland IP still
+//     tests the path.) We ALSO record the DNS result and, if DNS gave an IP,
+//     a SYN to that resolved IP for completeness.
+//  2. When the SYN succeeds we attempt a bounded TLS handshake with the real
+//     hostname as SNI, so SNI/TLS filtering is OBSERVED (tlsOk:false + reset)
+//     rather than inferred from "syn worked but the round failed".
+type StageResult = { ms: number | null; ok: boolean; error: string | null }
 type BlackholeStageDiag = {
   host: string
+  // DNS resolution of the real mainland host (stage 1)
   dnsMs: number | null
   dnsOk: boolean
   dnsError: string | null
   resolvedIp: string | null
-  // raw TCP SYN straight to the resolved IP literal — no DNS, no TLS
-  synMs: number | null
-  synOk: boolean
-  synError: string | null
+  // raw SYN to a STATIC mainland IP literal — DNS entirely out of the path
+  synStaticIp: string
+  synStaticMs: number | null
+  synStaticOk: boolean
+  synStaticError: string | null
+  // raw SYN to the DNS-resolved IP (only if DNS succeeded) — for completeness
+  synResolvedMs: number | null
+  synResolvedOk: boolean
+  synResolvedError: string | null
+  // bounded TLS handshake with the real SNI, only attempted if a SYN succeeded
+  tlsMs: number | null
+  tlsOk: boolean
+  tlsError: string | null
 }
+
+// Static mainland IP literals across CSPs (Alibaba OSS Hangzhou/Beijing, Tencent
+// COS Beijing) for the DNS-independent SYN test. Multiple entries so a rotated
+// IP doesn't blind the probe; the first reachable is used. These only need to be
+// real mainland-hosted addresses — a GFW blackhole drops SYNs to the whole
+// mainland, so the exact host is immaterial. Captured 2026-09-28.
+const MAINLAND_IP_LITERALS = ['118.31.219.230', '59.110.190.88', '82.156.94.45']
 
 function timedDnsLookup(host: string, timeoutMs: number): Promise<{ ms: number; ip: string | null; error: string | null }> {
   return new Promise((resolve) => {
@@ -210,7 +243,7 @@ function timedDnsLookup(host: string, timeoutMs: number): Promise<{ ms: number; 
   })
 }
 
-function timedTcpConnect(ip: string, port: number, timeoutMs: number): Promise<{ ms: number; ok: boolean; error: string | null }> {
+function timedTcpConnect(ip: string, port: number, timeoutMs: number): Promise<StageResult> {
   return new Promise((resolve) => {
     const t0 = performance.now()
     let settled = false
@@ -234,6 +267,39 @@ function timedTcpConnect(ip: string, port: number, timeoutMs: number): Promise<{
   })
 }
 
+// Bounded TLS handshake to (ip, port) presenting `servername` as SNI. SNI-based
+// filtering surfaces here as a reset/hang AFTER a clean SYN, distinguishing it
+// from a network blackhole (which fails at SYN) and from a healthy path.
+function timedTlsHandshake(ip: string, port: number, servername: string, timeoutMs: number): Promise<StageResult> {
+  return new Promise((resolve) => {
+    const t0 = performance.now()
+    let settled = false
+    let socket: ReturnType<typeof tlsConnect> | undefined
+    const timer = setTimeout(() => finish(false, 'timeout'), timeoutMs)
+    function finish(ok: boolean, error: string | null) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try {
+        socket?.destroy()
+      } catch {
+        /* ignore */
+      }
+      resolve({ ms: performance.now() - t0, ok, error })
+    }
+    try {
+      // Connect to the literal IP but present the real hostname as SNI. We only
+      // care whether the handshake COMPLETES, not whether the cert validates, so
+      // rejectUnauthorized:false keeps a cert mismatch (we're dialing an IP) from
+      // masking the SNI-filter signal we're actually testing for.
+      socket = tlsConnect({ host: ip, port, servername, rejectUnauthorized: false }, () => finish(true, null))
+      socket.once('error', (err: NodeJS.ErrnoException) => finish(false, err.code || err.name || 'error'))
+    } catch (err) {
+      finish(false, (err as NodeJS.ErrnoException)?.code || 'error')
+    }
+  })
+}
+
 async function diagnoseBlackhole(url: string): Promise<BlackholeStageDiag | null> {
   let host: string
   let port: number
@@ -244,24 +310,50 @@ async function diagnoseBlackhole(url: string): Promise<BlackholeStageDiag | null
   } catch {
     return null
   }
-  // Stage 1: resolve DNS (time-bounded). If this hangs, the round's `timeout`
-  // was really a DNS stall, not a network blackhole.
+  // Stage 1: resolve DNS for the real host (time-bounded). A hang here means the
+  // round's `timeout` was a DNS stall.
   const dns = await timedDnsLookup(host, 3000)
-  // Stage 2: raw SYN to the resolved IP literal (no DNS, no TLS). Only runs if
-  // we got an IP; a blackhole shows as a SYN timeout even though DNS succeeded.
-  let syn = { ms: null as number | null, ok: false, error: 'skipped-no-ip' as string | null }
-  if (dns.ip) {
-    syn = await timedTcpConnect(dns.ip, port, 3000)
+
+  // Stage 2a: raw SYN to a STATIC mainland IP literal — NO DNS in the path, so
+  // this runs even when stage 1 hung. This is the decisive network-vs-DNS test:
+  // if this SYN times out, the egress path to the mainland is blackholed; if it
+  // connects while DNS failed, the failure was the resolver.
+  let synStatic: StageResult = { ms: null, ok: false, error: 'no-literal' }
+  let synStaticIp = MAINLAND_IP_LITERALS[0] ?? ''
+  for (const ip of MAINLAND_IP_LITERALS) {
+    synStaticIp = ip
+    synStatic = await timedTcpConnect(ip, 443, 3000)
+    if (synStatic.ok) break // a reachable literal is enough
   }
+
+  // Stage 2b: raw SYN to the DNS-resolved IP (only if DNS gave one) for a direct
+  // comparison against the same host the round actually tried.
+  let synResolved: StageResult = { ms: null, ok: false, error: 'skipped-no-ip' }
+  if (dns.ip) synResolved = await timedTcpConnect(dns.ip, port, 3000)
+
+  // Stage 3: bounded TLS handshake with the real SNI, over whichever IP just
+  // connected at the TCP layer (prefer the resolved host's IP; fall back to the
+  // static literal). Only meaningful if some SYN succeeded.
+  let tls: StageResult = { ms: null, ok: false, error: 'skipped-no-syn' }
+  const tlsIp = synResolved.ok && dns.ip ? dns.ip : synStatic.ok ? synStaticIp : null
+  if (tlsIp) tls = await timedTlsHandshake(tlsIp, 443, host, 3000)
+
   return {
     host,
     dnsMs: Math.round(dns.ms),
     dnsOk: dns.ip !== null,
     dnsError: dns.error,
     resolvedIp: dns.ip,
-    synMs: syn.ms === null ? null : Math.round(syn.ms),
-    synOk: syn.ok,
-    synError: syn.error,
+    synStaticIp,
+    synStaticMs: synStatic.ms === null ? null : Math.round(synStatic.ms),
+    synStaticOk: synStatic.ok,
+    synStaticError: synStatic.error,
+    synResolvedMs: synResolved.ms === null ? null : Math.round(synResolved.ms),
+    synResolvedOk: synResolved.ok,
+    synResolvedError: synResolved.error,
+    tlsMs: tls.ms === null ? null : Math.round(tls.ms),
+    tlsOk: tls.ok,
+    tlsError: tls.error,
   }
 }
 
