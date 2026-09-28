@@ -51,6 +51,10 @@ const WINDOW_HOURS = 48
 const FREQ_ALERT = 0.4
 // T1 needs a minimum sample before a rate means anything.
 const FREQ_MIN_OBS = 20
+// The at-risk cohort for the T1 rate: only these origins can blackhole (they use
+// the AWS egress pool the GFW blocks). GCP/Azure origins probe mainland too but
+// never blackhole, so including them would dilute the rate denominator.
+const COHORT_PREFIXES = ['aws-']
 // T2: flag if a single origin's mainland is all-failed (HK healthy) for at least
 // this many CONSECUTIVE observed rounds — the "stopped self-healing" signal.
 const STUCK_CONSECUTIVE = 4
@@ -79,16 +83,27 @@ function isHongKong(r) {
 // Reduce the current raw round into one record per origin with mainland/HK
 // counts and a per-origin blackhole flag (mainland attempted, all failed, >=1 HK
 // ok) — the same definition the probe uses for cnBlackhole.
+//
+// Two correctness guards (codex review):
+//  - SKIP columns marked `stale: true`. probe.yml carries a missing origin's
+//    PREVIOUS results forward (stale) so /health keeps its last values briefly.
+//    Counting a stale column as a fresh observation would fabricate consecutive
+//    rounds (false T2) or let a stale-healthy column break a real streak.
+//  - Use each COLUMN's own `at`, not the round's top-level `at`, for ts/dedup —
+//    a stale column keeps its old timestamp, and per-column time is what makes
+//    the (origin, at) dedup and the rolling window correct.
 function summarizeRound(latest) {
-  const at = latest.at || new Date().toISOString()
-  const ts = Date.parse(at)
+  const topAt = latest.at || new Date().toISOString()
   const out = []
   const from = latest.from || {}
   for (const [origin, round] of Object.entries(from)) {
-    const results = (round && round.results) || []
+    if (!round || round.stale) continue // don't record carried-forward columns
+    const results = round.results || []
     const mainland = results.filter(isMainland)
     const hk = results.filter(isHongKong)
     if (mainland.length === 0) continue
+    const at = round.at || topAt
+    const ts = Date.parse(at)
     const mainlandOk = mainland.filter((r) => r.ok).length
     const hkOk = hk.filter((r) => r.ok).length
     out.push({
@@ -119,13 +134,21 @@ function evaluate(entries) {
   const cutoff = Date.now() - WINDOW_HOURS * 3600 * 1000
   const win = entries.filter((e) => typeof e.ts === 'number' && e.ts >= cutoff)
 
-  // T1: overall blackhole rate across all observations in the window.
-  const total = win.length
-  const blackholes = win.filter((e) => e.blackhole).length
+  // T1: blackhole rate over the AT-RISK cohort ONLY. The blackhole affects AWS
+  // origins (they draw egress IPs from the AWS pool the GFW blocks); GCP/Azure
+  // origins also probe mainland but never blackhole (different egress), so
+  // including them would dilute the denominator with ~20 always-healthy rows and
+  // the APAC rate could climb past the threshold while the fleet-wide rate stays
+  // low and never fires (codex review). Restrict to AWS origins.
+  const cohort = win.filter((e) => COHORT_PREFIXES.some((p) => e.origin.startsWith(p)))
+  const total = cohort.length
+  const blackholes = cohort.filter((e) => e.blackhole).length
   const rate = total > 0 ? blackholes / total : 0
   const freqFlagged = total >= FREQ_MIN_OBS && rate >= FREQ_ALERT
 
   // T2: per-origin trailing consecutive blackhole streak (most recent first).
+  // Streaks are inherently per-origin so they don't need the cohort filter, but
+  // only cohort origins can ever blackhole, so non-AWS origins never trip it.
   const byOrigin = new Map()
   for (const e of win) {
     if (!byOrigin.has(e.origin)) byOrigin.set(e.origin, [])
