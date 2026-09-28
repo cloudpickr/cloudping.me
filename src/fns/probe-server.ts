@@ -123,9 +123,10 @@ async function lookupEgressIp(): Promise<string | null> {
     })
     const text = await res.text()
     const ip = text.trim()
-    // checkip returns a bare "1.2.3.4\n"; validate cheaply so a hijacked/proxied
-    // response can't inject arbitrary text into the round summary.
-    return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip) ? ip : null
+    // checkip returns a bare "1.2.3.4\n"; validate each octet is 0-255 so a
+    // hijacked/proxied response can't inject arbitrary text (or a malformed
+    // "999.999.999.999") into the round summary.
+    return /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(ip) ? ip : null
   } catch {
     return null
   } finally {
