@@ -1,0 +1,141 @@
+name: China reachability monitor
+
+# Watches for the SPECIFIC triggers that would justify reopening engineering work
+# on the intermittent China-mainland blackhole (see scripts/check-cn-reachability.mjs
+# and docs/reviews). A three-model review (claude + antigravity + codex) concluded:
+# stop touching probing code, accept that a single-round blackhole self-heals next
+# round, and DON'T reopen merely because another blank appears — reopen only if the
+# gap RATE worsens (T1) or an origin STOPS self-healing for several consecutive
+# rounds (T2). This job reads only the public status-branch latest.json (no cloud
+# creds, no cloud calls — zero added cost; public-repo Actions minutes are free),
+# keeps a tiny rolling state on a DEDICATED `cn-monitor` branch (so the probe's
+# force-push to `status` can't clobber it), and opens/refreshes ONE tracking issue
+# when a trigger fires. Healthy windows are silent. It never edits data or config.
+#
+# The two deeper triggers from the review — T3 (DNS ok + TCP ok yet the probe
+# fails) and T4 (same egress IP with mixed outcomes) — need the per-round
+# CloudWatch blackholeStage/egressIp diagnostics, which aren't public and would
+# require AWS creds in this public repo, so they stay a human-log task noted in
+# the issue body rather than an automated check here.
+
+on:
+  schedule:
+    # A few minutes after the probe's :07/:37 rounds so latest.json is fresh.
+    - cron: '12,42 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: cn-reachability
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Fetch the dedicated state branch (create an empty one on first run). This
+      # branch is touched ONLY by this workflow, so it never races the probe's
+      # force-push to `status`.
+      - name: Load monitor state
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin cn-monitor >/dev/null 2>&1; then
+            git fetch origin cn-monitor
+            git show origin/cn-monitor:cn-monitor.json > cn-monitor.json 2>/dev/null || echo '{"entries":[]}' > cn-monitor.json
+          else
+            echo '{"entries":[]}' > cn-monitor.json
+          fi
+
+      - name: Run China reachability monitor
+        id: monitor
+        run: |
+          set -euo pipefail
+          node scripts/check-cn-reachability.mjs || true                       # human-readable to the run log
+          node scripts/check-cn-reachability.mjs --persist --json > /tmp/cn-monitor-result.json
+          has=$(python3 -c 'import json; print(str(json.load(open("/tmp/cn-monitor-result.json"))["hasProblem"]).lower())')
+          echo "has_problem=${has}" >> "${GITHUB_OUTPUT}"
+
+      # Persist the (trimmed) rolling state back to the dedicated branch.
+      - name: Save monitor state
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          cp cn-monitor.json "${tmp}/cn-monitor.json"
+          git checkout --orphan cn-monitor-publish
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          rm -rf ./* >/dev/null 2>&1 || true
+          cp "${tmp}/cn-monitor.json" cn-monitor.json
+          git add cn-monitor.json
+          git commit -m "cn-monitor $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 0
+          git push --force origin HEAD:cn-monitor
+
+      - name: Open or refresh tracking issue
+        if: steps.monitor.outputs.has_problem == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import json
+          d = json.load(open("/tmp/cn-monitor-result.json"))
+          L = ["A China-reachability reopen trigger fired. Background: cloudping's China-mainland",
+               "cells intermittently go all-blank from an AWS origin for a single 30-min round",
+               "while the Hong Kong controls stay healthy. A three-model review (claude + antigravity",
+               "+ codex) localized this to TCP connection establishment on the origin→mainland path",
+               "(DNS resolves; a raw SYN to a mainland IP literal times out), with the responsible",
+               "network SUSPECTED (GFW / transit / source-prefix filtering) but NOT proven, and",
+               "decided to STOP touching probing code and accept self-healing single-round blanks.",
+               "",
+               "This issue means one of the agreed **reopen triggers** has now fired — reassess",
+               "whether a real fix (e.g. a static clean egress IP via VPC+NAT, ~$36/mo/region) is",
+               "now worth it, or whether the window is still acceptable.", "",
+               f"_Generated {d['generatedAt']} (round {d.get('roundAt')}) by `.github/workflows/cn-reachability.yml`._",
+               f"_Window: {d['windowHours']}h, {d['observations']} origin-round observations, {d['blackholes']} blackhole ({int(d['rate']*100)}%)._",
+               ""]
+          if d.get("freqFlagged"):
+              L.append(f"### Trigger T1 — blackhole RATE elevated")
+              L.append(f"- {int(d['rate']*100)}% of observations were mainland-blackhole over {d['windowHours']}h "
+                       f"(alert threshold {int(d['freqThreshold']*100)}%).")
+              L.append("")
+          if d.get("stuck"):
+              L.append(f"### Trigger T2 — an origin STOPPED self-healing")
+              for s in d["stuck"]:
+                  L.append(f"- `{s['origin']}`: mainland all-failed (HK healthy) for {s['streak']} consecutive rounds "
+                           f"(threshold {d['stuckThreshold']}); latest {s['lastAt']}.")
+              L.append("")
+          L.append("### Per-origin over the window")
+          for o in d["perOrigin"]:
+              if o["blackholes"]:
+                  L.append(f"- `{o['origin']}`: {o['blackholes']}/{o['observations']} blackhole ({int(o['rate']*100)}%)")
+          L += ["",
+                "### Not auto-checked (need CloudWatch, do by hand if diagnosing)",
+                "- T3: a `probe-round-summary` where `blackholeStage.dnsOk` and a raw SYN both succeed yet the round still failed (would mean the cause is NOT a network blackhole).",
+                "- T4: the same `egressIp` seen in both a blackhole and a healthy round (would test the per-IP-block hypothesis).",
+                "",
+                "Diagnose — do not auto-fix. Close this issue once reassessed; it re-opens if the trigger persists."]
+          print("\n".join(L))
+          PY
+          )"
+
+          title="China reachability: a reopen trigger fired"
+          existing="$(gh issue list --state open --search "in:title ${title}" --json number,title \
+            --jq ".[] | select(.title==\"${title}\") | .number" | head -n1)"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "${body}"
+            echo "Refreshed existing issue #${existing}."
+          else
+            gh issue create --title "${title}" --body "${body}" --label cn-reachability 2>/dev/null \
+              || gh issue create --title "${title}" --body "${body}"
+          fi
