@@ -109,10 +109,19 @@ const WARMUP_COUNT = 2
 // Trim only the default timeout (5s→3s): a healthy target answers well under it
 // (the farthest real paths, e.g. Seoul→São Paulo, sit ~300ms), so 3s still leaves
 // a 10× margin while stopping dead targets from stalling a round for 5s each.
-// China keeps its 2s bucket unchanged — GFW/DPI jitter there is exactly why it's
-// separated, so tightening it further would risk false timeouts.
 const DEFAULT_TIMEOUT_MS = 3000
-const CHINA_TIMEOUT_MS = 2000
+// China now uses the same 3s timeout as everything else. It was 2s, but that was
+// TOO TIGHT: the first cross-border TCP+TLS handshake into China costs 0.4-1.4s
+// from AWS Seoul/Singapore (Beijing ~1.4s ≈ one dropped SYN + Linux's 1s SYN
+// retransmit), and in-round fan-out CPU parking (80-300ms) pushed it past 2s,
+// producing FALSE timeouts on reachable endpoints (they return 403, and warm
+// samples run ~100ms). 3s absorbs the cold handshake with margin while warm
+// samples are unaffected (min() reports the fast warm read regardless of the
+// abort ceiling). Fail-fast (all-warmups-fail → bail) bounds a genuinely dead
+// China target to 2×3s, and the original 5s→3s trim already removed the long
+// stalls the 2s bucket was created to avoid. Cross-reviewed (claude+antigravity),
+// unanimous. Applies uniformly to the main round and both follow-up passes.
+const CHINA_TIMEOUT_MS = 3000
 // The implausible-sample floor (MIN_PLAUSIBLE_MS) is shared with the browser
 // vantage point via measure-core: samples faster than it are dropped before
 // min() so one sub-RTT artifact can't win outright. MIN_SAMPLES already
