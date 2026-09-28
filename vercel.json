@@ -1,8 +1,7 @@
 {
   "git": {
     "deploymentEnabled": {
-      "status": false,
-      "cn-monitor": false
+      "status": false
     }
   },
   "headers": [
