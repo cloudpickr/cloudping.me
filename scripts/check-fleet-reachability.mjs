@@ -126,7 +126,12 @@ function buildBaseline(history) {
 }
 
 // Evaluate the current round for cross-fleet asymmetry candidates.
-function findCandidates(latest, eligible) {
+// `frozenPairs` is a Set of `${origin}\t${tkey}` that must be treated as eligible
+// even if their rolling baseline has aged out — used to keep an ACTIVE event's
+// target under evaluation (a continuing outage removes successes from the 24h
+// history, which would otherwise drop the target below the baseline and make the
+// still-failing event vanish as a false "recovery"; codex review).
+function findCandidates(latest, eligible, frozenPairs) {
   const from = latest.from || {}
   // Collect explicit (non-stale) results per target per fleet, restricted to
   // baseline-eligible (origin,target) pairs.
@@ -140,10 +145,10 @@ function findCandidates(latest, eligible) {
     if (!fleet) continue
     fleetOrigins[fleet].add(origin)
     const elig = eligible.get(origin)
-    if (!elig) continue
     for (const r of col.results || []) {
       const tkey = `${r.provider}\t${r.region}`
-      if (!elig.has(tkey)) continue // only judge targets this origin normally reaches
+      const isEligible = (elig && elig.has(tkey)) || (frozenPairs && frozenPairs.has(`${origin}\t${tkey}`))
+      if (!isEligible) continue // only judge targets this origin normally reaches (or a frozen active-event target)
       if (typeof r.ok !== 'boolean') continue
       if (!perTarget.has(tkey)) perTarget.set(tkey, { aws: { fail: [], ok: [] }, gcp: { fail: [], ok: [] }, azure: { fail: [], ok: [] } })
       const slot = perTarget.get(tkey)[fleet]
@@ -207,12 +212,24 @@ function loadState() {
 
 // Assign the round to a 30-min slot so re-runs on the same published round don't
 // manufacture a confirmation streak.
+const SLOT_MS = 30 * 60 * 1000
 function slotOf(latest) {
   const at = latest.at || new Date().toISOString()
   const ms = Date.parse(at)
   if (Number.isNaN(ms)) return at
-  const slot = Math.floor(ms / (30 * 60 * 1000))
-  return new Date(slot * 30 * 60 * 1000).toISOString()
+  const slot = Math.floor(ms / SLOT_MS)
+  return new Date(slot * SLOT_MS).toISOString()
+}
+// True iff `slot` is exactly one 30-min interval after `prevSlot`. Used so a
+// streak only advances across ADJACENT slots — a skipped/missed round (e.g. slot
+// N then N+2) is NOT treated as consecutive, which would otherwise defeat the
+// two-consecutive-round confirmation and recovery gates (codex review).
+function isAdjacentSlot(prevSlot, slot) {
+  if (!prevSlot) return false
+  const a = Date.parse(prevSlot)
+  const b = Date.parse(slot)
+  if (Number.isNaN(a) || Number.isNaN(b)) return false
+  return b - a === SLOT_MS
 }
 
 async function main() {
@@ -221,11 +238,27 @@ async function main() {
 
   const [latest, history] = await Promise.all([getJson(LATEST_URL), getJson(HISTORY_URL)])
   const eligible = buildBaseline(history)
-  const candidates = findCandidates(latest, eligible)
   const slot = slotOf(latest)
 
   const state = loadState()
+  // Freeze eligibility for targets of already-active events: rebuild the set of
+  // (origin, target) pairs that any active event covers, so a continuing outage
+  // (which erodes the target's 24h success baseline) can't drop it from
+  // evaluation and fake a recovery. We freeze the whole fleet's origins for that
+  // target — the candidate rule still needs the real cross-fleet asymmetry.
+  const frozenPairs = new Set()
+  for (const [key, ev] of Object.entries(state.events || {})) {
+    if (!ev || !ev.confirmed) continue
+    const [fleet, provider, region] = key.split('|')
+    const tkey = `${provider}\t${region}`
+    for (const origin of Object.keys(latest.from || {})) {
+      if (fleetOf(origin) === fleet) frozenPairs.add(`${origin}\t${tkey}`)
+    }
+  }
+
+  const candidates = findCandidates(latest, eligible, frozenPairs)
   const isNewSlot = state.lastSlot !== slot
+  const adjacent = isAdjacentSlot(state.lastSlot, slot)
   const candKeys = new Set(candidates.map((c) => c.key))
   const candByKey = new Map(candidates.map((c) => [c.key, c]))
 
@@ -234,10 +267,15 @@ async function main() {
   const confirmed = []
   const recovered = []
   if (isNewSlot) {
-    // bump / open candidates
+    // bump / open candidates. A streak only advances if THIS slot is exactly one
+    // interval after the event's previous slot; a gap (missed/skipped round)
+    // resets it to 1, so N and N+2 with N+1 missing don't count as consecutive.
     for (const c of candidates) {
-      const ev = state.events[c.key] || { firstSlot: slot, candidateStreak: 0, recoveryStreak: 0, confirmed: false, last: null }
-      ev.candidateStreak += 1
+      const prev = state.events[c.key]
+      const contiguous = prev && isAdjacentSlot(prev.lastSlot, slot)
+      const ev = prev || { firstSlot: slot, candidateStreak: 0, recoveryStreak: 0, confirmed: false, last: null }
+      ev.candidateStreak = contiguous ? ev.candidateStreak + 1 : 1
+      if (!contiguous && !ev.confirmed) ev.firstSlot = slot
       ev.recoveryStreak = 0
       ev.lastSlot = slot
       ev.last = { failed: c.failed, observed: c.observed, others: c.others }
@@ -248,13 +286,18 @@ async function main() {
       }
       state.events[c.key] = ev
     }
-    // decay events not seen this slot
+    // decay events not seen this slot. Recovery also requires CONSECUTIVE clear
+    // slots; a non-adjacent slot is inconclusive (we don't know the missed
+    // round's state), so it does NOT advance recovery for a confirmed event —
+    // the event stays active rather than being falsely cleared.
     for (const [key, ev] of Object.entries(state.events)) {
       if (candKeys.has(key)) continue
       ev.candidateStreak = 0
-      ev.recoveryStreak = (ev.recoveryStreak || 0) + 1
+      if (adjacent) {
+        ev.recoveryStreak = (ev.recoveryStreak || 0) + 1
+      }
       // recovered: was confirmed, now 2 consecutive clear slots
-      if (ev.confirmed && ev.recoveryStreak >= 2) {
+      if (ev.confirmed && adjacent && ev.recoveryStreak >= 2) {
         recovered.push(key)
         delete state.events[key]
       } else if (!ev.confirmed && ev.recoveryStreak >= 2) {
