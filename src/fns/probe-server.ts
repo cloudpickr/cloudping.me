@@ -98,6 +98,55 @@ try {
   /* channel unavailable: newConn stays undefined, probes unaffected */
 }
 
+// --- Egress-IP lookup (diagnostic only) -------------------------------------
+// The China-blackhole investigation (claude + antigravity cross-review, plus
+// production CloudWatch telemetry) concluded that AWS Tokyo/Seoul/Singapore
+// rounds intermittently lose ALL mainland-China targets while Hong Kong (same
+// pool, same CSPs, same TLS stack) keeps answering at ~54ms and cpuUtil stays
+// ~0.09 with zero spin parking — i.e. it is NOT CPU park (the original guess,
+// which a confounded throwaway-Lambda load test had wrongly implicated), but a
+// Great-Firewall blackhole of specific Lambda egress IPs. To turn that from a
+// strong inference into a proven 1:1 correlation, we record the round's egress
+// IP so production logs can show whether blackhole rounds map to recurring IPs.
+// One request per round, run in parallel with setup, hard-bounded, and wrapped
+// so it can never fail or slow a round: on any error egressIp is simply null.
+async function lookupEgressIp(): Promise<string | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 2000)
+  try {
+    const res = await fetch('https://checkip.amazonaws.com', {
+      method: 'GET',
+      cache: 'no-store',
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: { 'user-agent': 'cloudping.me-probe' },
+    })
+    const text = await res.text()
+    const ip = text.trim()
+    // checkip returns a bare "1.2.3.4\n"; validate each octet is 0-255 so a
+    // hijacked/proxied response can't inject arbitrary text (or a malformed
+    // "999.999.999.999") into the round summary.
+    return /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(ip) ? ip : null
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// Classify a result as mainland China vs Hong Kong for the cnBlackhole flag.
+// Mainland is the GFW-gated set (country 'CN'), explicitly EXCLUDING Hong Kong
+// endpoints — note alibaba's `cn-hongkong` is catalogued country:'CN' but is
+// physically outside the firewall and keeps succeeding during a blackhole, so
+// it must not dilute the mainland signal. HK controls are country:'HK' plus
+// that one mislabeled Alibaba entry.
+function isMainlandChina(r: ProbeResult): boolean {
+  return r.country === 'CN' && r.location !== 'Hong Kong'
+}
+function isHongKong(r: ProbeResult): boolean {
+  return r.country === 'HK' || r.location === 'Hong Kong'
+}
+
 export type { ProbeResult, ProbeSnapshot } from './probe-snapshot'
 
 const MAX_BODY_BYTES = 64 * 1024
@@ -437,6 +486,19 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
 
     origin = resolveOrigin()
 
+    // Kick off the egress-IP lookup now so it overlaps the whole measurement
+    // pass (its result is only read when we build the round summary). Fire-and-
+    // forget: lookupEgressIp swallows all errors and resolves to null, so this
+    // never rejects and never needs its own try/catch. We sample it AGAIN at
+    // round end (egressIpEnd) so the summary can self-check IP stability: a
+    // non-VPC Lambda/Cloud Run/App Service has no guaranteed fixed egress, and a
+    // per-connection NAT could in principle send the checkip request and the
+    // mainland requests out different addresses (raised in review). If the two
+    // samples disagree (egressIpStable:false) the per-round IP↔blackhole pairing
+    // is unreliable for that round and the cross-round correlation must account
+    // for it; if they consistently agree, the single value is trustworthy.
+    const egressIpPromise = lookupEgressIp()
+
     // Exclude the self-cell (origin measuring its own region) from the concurrent
     // fan-out entirely and measure it alone after the pool (see the serial pass
     // below). On the ~0.28 vCPU Lambda, running self among 12 concurrent targets
@@ -653,6 +715,32 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
       }
     })
 
+    // --- China blackhole detector (diagnostic only) -------------------------
+    // True when the round attempted mainland-China targets, ALL of them failed,
+    // and at least one Hong Kong control succeeded. That exact shape is the
+    // GFW-blackhole signature the cross-review identified: a process-wide CPU
+    // park or a local network fault would also take Hong Kong down, so an
+    // all-mainland-down / HK-up round isolates the firewall border as the cause.
+    // Paired with egressIp below, production logs can then show whether these
+    // rounds recur on specific Lambda egress IPs — the evidence needed before
+    // committing to an operational fix (container recycling / re-invoke).
+    const mainlandResults = results.filter(isMainlandChina)
+    const hkResults = results.filter(isHongKong)
+    const mainlandOk = mainlandResults.filter((r) => r.ok).length
+    const hkOk = hkResults.filter((r) => r.ok).length
+    const cnBlackhole = mainlandResults.length > 0 && mainlandOk === 0 && hkOk > 0
+
+    // The egress-IP lookup was fired at round start; it resolves to a validated
+    // IPv4 string or null (never rejects). Awaiting here adds no latency in
+    // practice — it has had the entire pool duration to complete. Sample again
+    // now (round end) to self-check stability across the round: egressIpStable
+    // is true only when both samples resolved AND matched. When it's false the
+    // platform is choosing outbound addresses per-connection/per-time, so a
+    // single egressIp cannot be assumed to be the address the mainland requests
+    // used — the correlation analysis must treat those rounds with caution.
+    const [egressIp, egressIpEnd] = await Promise.all([egressIpPromise, lookupEgressIp()])
+    const egressIpStable = egressIp !== null && egressIpEnd !== null ? egressIp === egressIpEnd : null
+
     // Shared topology log for AWS, GCP, Azure, and Vercel origins. Keeping the
     // catalog index and target identity distinguishes destination-specific
     // failures from an origin-side resource block without another probe pass.
@@ -661,6 +749,9 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
       JSON.stringify({
         kind: 'probe-round-summary',
         origin: origin.id,
+        egressIp,
+        egressIpEnd,
+        egressIpStable,
         concurrency,
         durationMs: Date.now() - started,
         eventLoopDelay: eldStats,
@@ -668,6 +759,9 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
         nearCellRemeasure,
         cells: results.length,
         failed: failedCount,
+        cnBlackhole,
+        chinaMainland: { attempted: mainlandResults.length, ok: mainlandOk },
+        hongKong: { attempted: hkResults.length, ok: hkOk },
         firstFailedIndex,
         lastFailedIndex,
         longestFailureBlock,
