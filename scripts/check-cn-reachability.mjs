@@ -146,7 +146,10 @@ function evaluate(entries) {
   const perOrigin = []
   for (const [origin, list] of byOrigin) {
     const b = list.filter((e) => e.blackhole).length
-    perOrigin.push({ origin, observations: list.length, blackholes: b, rate: Number((b / list.length).toFixed(2)) })
+    // list.length is always >= 1 (entries only enter byOrigin via push), but guard
+    // the division anyway so a future refactor can't emit NaN into the JSON.
+    const rate = list.length > 0 ? Number((b / list.length).toFixed(2)) : 0
+    perOrigin.push({ origin, observations: list.length, blackholes: b, rate })
   }
   perOrigin.sort((a, b) => b.rate - a.rate)
 

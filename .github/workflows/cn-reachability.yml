@@ -72,11 +72,11 @@ jobs:
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
-          cp cn-monitor.json "${tmp}/cn-monitor.json"
+          cp cn-monitor.json "${tmp}/cn-monitor.json" || { echo "failed to back up monitor state" >&2; exit 1; }
           git checkout --orphan cn-monitor-publish
           git rm -rf --cached . >/dev/null 2>&1 || true
           rm -rf ./* >/dev/null 2>&1 || true
-          cp "${tmp}/cn-monitor.json" cn-monitor.json
+          cp "${tmp}/cn-monitor.json" cn-monitor.json || { echo "failed to restore monitor state" >&2; exit 1; }
           git add cn-monitor.json
           git commit -m "cn-monitor $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 0
           git push --force origin HEAD:cn-monitor
