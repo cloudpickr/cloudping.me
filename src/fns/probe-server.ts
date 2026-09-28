@@ -189,14 +189,20 @@ function timedDnsLookup(host: string, timeoutMs: number): Promise<{ ms: number; 
     try {
       // ipv4first is set process-wide; ask for a single A record.
       dnsLookup(host, { family: 4 }, (err, address) => {
-        if (done) return
+        if (done) {
+          clearTimeout(timer)
+          return
+        }
         done = true
         clearTimeout(timer)
         if (err) resolve({ ms: performance.now() - t0, ip: null, error: (err as NodeJS.ErrnoException).code || err.name || 'error' })
         else resolve({ ms: performance.now() - t0, ip: address, error: null })
       })
     } catch (err) {
-      if (done) return
+      if (done) {
+        clearTimeout(timer)
+        return
+      }
       done = true
       clearTimeout(timer)
       resolve({ ms: performance.now() - t0, ip: null, error: (err as NodeJS.ErrnoException)?.code || 'error' })
@@ -849,7 +855,7 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
     // healthy rounds, so it adds no steady-state cost; fully wrapped so it can
     // neither fail nor materially slow the round.
     let blackholeStage: BlackholeStageDiag | null = null
-    if (cnBlackhole) {
+    if (cnBlackhole && mainlandResults.length > 0) {
       // Map the first mainland result back to its job to recover the ping_url.
       const firstMainland = mainlandResults[0]
       const mlJob = jobs.find((j) => j.provider === firstMainland.provider && j.region.key === firstMainland.region)
