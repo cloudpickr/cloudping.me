@@ -489,7 +489,14 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
     // Kick off the egress-IP lookup now so it overlaps the whole measurement
     // pass (its result is only read when we build the round summary). Fire-and-
     // forget: lookupEgressIp swallows all errors and resolves to null, so this
-    // never rejects and never needs its own try/catch.
+    // never rejects and never needs its own try/catch. We sample it AGAIN at
+    // round end (egressIpEnd) so the summary can self-check IP stability: a
+    // non-VPC Lambda/Cloud Run/App Service has no guaranteed fixed egress, and a
+    // per-connection NAT could in principle send the checkip request and the
+    // mainland requests out different addresses (raised in review). If the two
+    // samples disagree (egressIpStable:false) the per-round IP↔blackhole pairing
+    // is unreliable for that round and the cross-round correlation must account
+    // for it; if they consistently agree, the single value is trustworthy.
     const egressIpPromise = lookupEgressIp()
 
     // Exclude the self-cell (origin measuring its own region) from the concurrent
@@ -725,8 +732,14 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
 
     // The egress-IP lookup was fired at round start; it resolves to a validated
     // IPv4 string or null (never rejects). Awaiting here adds no latency in
-    // practice — it has had the entire pool duration to complete.
-    const egressIp = await egressIpPromise
+    // practice — it has had the entire pool duration to complete. Sample again
+    // now (round end) to self-check stability across the round: egressIpStable
+    // is true only when both samples resolved AND matched. When it's false the
+    // platform is choosing outbound addresses per-connection/per-time, so a
+    // single egressIp cannot be assumed to be the address the mainland requests
+    // used — the correlation analysis must treat those rounds with caution.
+    const [egressIp, egressIpEnd] = await Promise.all([egressIpPromise, lookupEgressIp()])
+    const egressIpStable = egressIp !== null && egressIpEnd !== null ? egressIp === egressIpEnd : null
 
     // Shared topology log for AWS, GCP, Azure, and Vercel origins. Keeping the
     // catalog index and target identity distinguishes destination-specific
@@ -737,6 +750,8 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
         kind: 'probe-round-summary',
         origin: origin.id,
         egressIp,
+        egressIpEnd,
+        egressIpStable,
         concurrency,
         durationMs: Date.now() - started,
         eventLoopDelay: eldStats,
