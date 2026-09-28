@@ -1,22 +1,21 @@
-name: China reachability monitor
+name: Reachability monitors
 
-# Watches for the SPECIFIC triggers that would justify reopening engineering work
-# on the intermittent China-mainland blackhole (see scripts/check-cn-reachability.mjs
-# and docs/reviews). A three-model review (claude + antigravity + codex) concluded:
-# stop touching probing code, accept that a single-round blackhole self-heals next
-# round, and DON'T reopen merely because another blank appears — reopen only if the
-# gap RATE worsens (T1) or an origin STOPS self-healing for several consecutive
-# rounds (T2). This job reads only the public status-branch latest.json (no cloud
-# creds, no cloud calls — zero added cost; public-repo Actions minutes are free),
-# keeps a tiny rolling state on a DEDICATED `cn-monitor` branch (so the probe's
-# force-push to `status` can't clobber it), and opens/refreshes ONE tracking issue
-# when a trigger fires. Healthy windows are silent. It never edits data or config.
+# Two complementary, credential-free reachability watchers that read only the
+# public status-branch latest.json/history.json (no cloud calls -> zero added
+# cost; public-repo Actions minutes are free) and keep tiny rolling state on a
+# DEDICATED `cn-monitor` branch (so the probe's force-push to `status` can't
+# clobber it). Each opens/refreshes ONE tracking issue when its condition fires;
+# healthy windows are silent. Neither edits data or config.
 #
-# The two deeper triggers from the review — T3 (DNS ok + TCP ok yet the probe
-# fails) and T4 (same egress IP with mixed outcomes) — need the per-round
-# CloudWatch blackholeStage/egressIp diagnostics, which aren't public and would
-# require AWS creds in this public repo, so they stay a human-log task noted in
-# the issue body rather than an automated check here.
+# 1. China reachability (scripts/check-cn-reachability.mjs): the GFW-specific
+#    mainland-vs-Hong-Kong blackhole. Reopen triggers T1 (rate) / T2 (stuck).
+#    The deeper T3/T4 need non-public CloudWatch data and stay a human-log task.
+# 2. Fleet reachability (scripts/check-fleet-reachability.mjs): a whole ORIGIN
+#    FLEET (all AWS / all GCP / all Azure) failing ONE target while the other two
+#    fleets reach it fine (cross-fleet asymmetry). Baseline-gated (chronically-
+#    dead targets never qualify) and CONFIRMED over 2 consecutive rounds before
+#    it alerts, so self-healing single-round blips (e.g. Azure→Vultr Santiago)
+#    are recorded but stay quiet.
 
 on:
   schedule:
@@ -43,9 +42,9 @@ jobs:
         with:
           node-version: 24
 
-      # Fetch the dedicated state branch (create an empty one on first run). This
-      # branch is touched ONLY by this workflow, so it never races the probe's
-      # force-push to `status`.
+      # Fetch the dedicated state branch (create empty on first run). This branch
+      # is touched ONLY by this workflow, so it never races the probe's
+      # force-push to `status`. Both monitors' state files live here.
       - name: Load monitor state
         run: |
           set -euo pipefail
@@ -54,8 +53,10 @@ jobs:
           if git ls-remote --exit-code --heads origin cn-monitor >/dev/null 2>&1; then
             git fetch origin cn-monitor
             git show origin/cn-monitor:cn-monitor.json > cn-monitor.json 2>/dev/null || echo '{"entries":[]}' > cn-monitor.json
+            git show origin/cn-monitor:fleet-monitor.json > fleet-monitor.json 2>/dev/null || echo '{"version":1,"lastSlot":null,"events":{}}' > fleet-monitor.json
           else
             echo '{"entries":[]}' > cn-monitor.json
+            echo '{"version":1,"lastSlot":null,"events":{}}' > fleet-monitor.json
           fi
 
       - name: Run China reachability monitor
@@ -67,24 +68,35 @@ jobs:
           has=$(python3 -c 'import json; print(str(json.load(open("/tmp/cn-monitor-result.json"))["hasProblem"]).lower())')
           echo "has_problem=${has}" >> "${GITHUB_OUTPUT}"
 
-      # Persist the (trimmed) rolling state back to the dedicated branch.
+      - name: Run fleet reachability monitor
+        id: fleet
+        run: |
+          set -euo pipefail
+          node scripts/check-fleet-reachability.mjs || true                    # human-readable to the run log
+          node scripts/check-fleet-reachability.mjs --persist --json > /tmp/fleet-monitor-result.json
+          has=$(python3 -c 'import json; print(str(json.load(open("/tmp/fleet-monitor-result.json"))["hasProblem"]).lower())')
+          echo "has_problem=${has}" >> "${GITHUB_OUTPUT}"
+
+      # Persist BOTH state files back to the dedicated branch in one push.
       - name: Save monitor state
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
-          cp cn-monitor.json "${tmp}/cn-monitor.json" || { echo "failed to back up monitor state" >&2; exit 1; }
+          cp cn-monitor.json "${tmp}/cn-monitor.json" || { echo "failed to back up cn state" >&2; exit 1; }
+          cp fleet-monitor.json "${tmp}/fleet-monitor.json" || { echo "failed to back up fleet state" >&2; exit 1; }
           git checkout --orphan cn-monitor-publish
           git rm -rf --cached . >/dev/null 2>&1 || true
           rm -rf ./* >/dev/null 2>&1 || true
-          cp "${tmp}/cn-monitor.json" cn-monitor.json || { echo "failed to restore monitor state" >&2; exit 1; }
+          cp "${tmp}/cn-monitor.json" cn-monitor.json || { echo "failed to restore cn state" >&2; exit 1; }
+          cp "${tmp}/fleet-monitor.json" fleet-monitor.json || { echo "failed to restore fleet state" >&2; exit 1; }
           # Vercel reads git.deploymentEnabled from the vercel.json on the PUSHED
           # branch. This orphan branch has no source, so without this file Vercel
           # defaults to enabled and fails a preview build on every 30-min push.
           # Ship a disabling vercel.json here (same trick the status publisher in
           # probe.yml uses) so Vercel never creates a deployment for this branch.
           printf '%s' '{"git":{"deploymentEnabled":false}}' > vercel.json
-          git add cn-monitor.json vercel.json
-          git commit -m "cn-monitor $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 0
+          git add cn-monitor.json fleet-monitor.json vercel.json
+          git commit -m "monitors $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 0
           git push --force origin HEAD:cn-monitor
 
       - name: Open or refresh tracking issue
@@ -143,5 +155,60 @@ jobs:
             echo "Refreshed existing issue #${existing}."
           else
             gh issue create --title "${title}" --body "${body}" --label cn-reachability 2>/dev/null \
+              || gh issue create --title "${title}" --body "${body}"
+          fi
+
+      - name: Open or refresh fleet-reachability issue
+        if: steps.fleet.outputs.has_problem == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import json
+          d = json.load(open("/tmp/fleet-monitor-result.json"))
+          L = ["A **fleet-wide reachability asymmetry** has been CONFIRMED across two consecutive",
+               "probe rounds: an entire origin fleet (all AWS, or all GCP, or all Azure regions)",
+               "cannot reach a target that BOTH other fleets reach fine in the same round. Because",
+               "the same target succeeds from the other two fleets, the target itself is up — the",
+               "failure is specific to the suspect fleet's egress/path to that target.", "",
+               "Only baseline-healthy targets qualify (chronically-dead / probe_disabled targets are",
+               "gated out via the ~24h success history), and a candidate must persist for two",
+               "consecutive rounds before this issue opens — so self-healing single-round blips",
+               "(e.g. a one-round Azure→Vultr-Santiago blank) do NOT alert.", "",
+               f"_Generated {d['generatedAt']} (round {d.get('roundAt')}) by `.github/workflows/cn-reachability.yml`._",
+               ""]
+          conf = d.get("activeConfirmed") or []
+          if conf:
+              L.append("### Confirmed fleet-wide asymmetries")
+              for e in conf:
+                  others = ", ".join(f"{g} {s['ok']}/{s['n']}" for g, s in (e.get("others") or {}).items())
+                  L.append(f"- **{e['key']}** since {e.get('since')}: "
+                           f"{e.get('failed')}/{e.get('observed')} of the fleet's origins fail it; "
+                           f"other fleets OK ({others}).")
+              L.append("")
+          cands = d.get("candidatesThisRound") or []
+          if cands:
+              L.append("### Candidates in the current round")
+              for c in cands:
+                  others = ", ".join(f"{g} {s['ok']}/{s['n']}" for g, s in (c.get("others") or {}).items())
+                  L.append(f"- `{c['fleet']}` fleet → `{c['provider']}:{c['region']}` "
+                           f"({c['failed']}/{c['observed']} fail); others OK ({others}).")
+              L.append("")
+          L += ["Diagnose — do not auto-fix. The cause is suspected (fleet egress/path, provider",
+                "routing, or target-side filtering of that fleet's addresses), not proven. Close",
+                "this issue once reassessed; it re-opens if the asymmetry persists."]
+          print("\n".join(L))
+          PY
+          )"
+
+          title="Fleet reachability: a confirmed cross-fleet asymmetry"
+          existing="$(gh issue list --state open --search "in:title ${title}" --json number,title \
+            --jq ".[] | select(.title==\"${title}\") | .number" | head -n1)"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "${body}"
+            echo "Refreshed existing issue #${existing}."
+          else
+            gh issue create --title "${title}" --body "${body}" --label fleet-reachability 2>/dev/null \
               || gh issue create --title "${title}" --body "${body}"
           fi
