@@ -122,6 +122,20 @@ const DEFAULT_TIMEOUT_MS = 3000
 // stalls the 2s bucket was created to avoid. Cross-reviewed (claude+antigravity),
 // unanimous. Applies uniformly to the main round and both follow-up passes.
 const CHINA_TIMEOUT_MS = 3000
+// The FIRST request to a target gets a longer cold-connect budget; every later
+// request (the 2nd warmup and all timed samples) keeps the per-target timeout.
+// On the longest real paths (Tokyo/Sydney/Australia → Oracle Valparaíso, ~380ms
+// warm RTT) the first TCP+TLS handshake measured ~5.5s (≈3-4 RTTs across a
+// >25,000km trans-Pacific route + SYN-retransmit backoff), so both 3s warmups
+// aborted and fail-fast blanked a reachable cell whose steady-state latency is
+// ~380ms. Only the first attempt pays this: a dead target now costs 7s+3s (was
+// 2×3s), far cheaper than raising the timeout uniformly (which would be 2×7s and
+// would need ≥7s to even cover 5.5s, since an aborted handshake destroys the
+// socket and the next attempt is cold again). Warmups aren't timed into the
+// reported ms, and samples stay at 3s (a mid-round reconnect measured ~2.2s and
+// MIN_SAMPLES tolerates one aborted sample), so no measured value changes.
+// Cross-reviewed (claude + antigravity), unanimous on first-request-only @ 7s.
+const COLD_CONNECT_TIMEOUT_MS = 7000
 // The implausible-sample floor (MIN_PLAUSIBLE_MS) is shared with the browser
 // vantage point via measure-core: samples faster than it are dropped before
 // min() so one sub-RTT artifact can't win outright. MIN_SAMPLES already
@@ -294,7 +308,9 @@ async function pingTarget(
   let warmupError: 'timeout' | 'network' = 'network'
   for (let i = 0; i < warmupCount; i++) {
     try {
-      await timedGet(url, timeoutMs)
+      // First contact may cross the longest paths' cold-connect cost (~5.5s);
+      // give only it the COLD_CONNECT budget, later requests keep timeoutMs.
+      await timedGet(url, i === 0 ? Math.max(timeoutMs, COLD_CONNECT_TIMEOUT_MS) : timeoutMs)
       warmupOk++
     } catch (err) {
       warmupError = errorKind(err)
