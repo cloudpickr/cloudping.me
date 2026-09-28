@@ -2,8 +2,9 @@ import { getAllCloudRegions, getAllProviders } from '@app/data'
 import type { ProbeResult, ProbeSnapshot } from './probe-snapshot'
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 import diagnosticsChannel from 'node:diagnostics_channel'
-import { setDefaultResultOrder } from 'node:dns'
-import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net'
+import { setDefaultResultOrder, lookup as dnsLookup } from 'node:dns'
+import { setDefaultAutoSelectFamilyAttemptTimeout, connect as netConnect } from 'node:net'
+import { connect as tlsConnect } from 'node:tls'
 import { withCacheBuster, MIN_PLAUSIBLE_MS } from './measure-core'
 
 // Global fetch (undici) connects via net's Happy Eyeballs, which tries the
@@ -145,6 +146,215 @@ function isMainlandChina(r: ProbeResult): boolean {
 }
 function isHongKong(r: ProbeResult): boolean {
   return r.country === 'HK' || r.location === 'Hong Kong'
+}
+
+// --- Blackhole stage diagnostic (diagnostic only, cnBlackhole rounds only) --
+// PR #81 proved the failure is source-side (per-execution-environment/egress-IP)
+// and binary (all 20 mainland cells fail, all Hong Kong controls pass). But the
+// probe only ever logs `timeout`, so the exact FAILURE STAGE is still inferred,
+// not observed — and the two live mechanism hypotheses need different fixes:
+//   • network-level blackhole (GFW null-routes the egress IP): even a raw SYN to
+//     a literal mainland IP, with NO DNS involved, gets no reply → connect times
+//     out. Fix space: force a fresh egress IP / static clean EIP.
+//   • DNS-path failure (a hanging lookup for *.aliyuncs.com etc.; DNS runs inside
+//     the same abort timer so it also surfaces as `timeout`): the DNS resolve
+//     hangs but a raw SYN to a literal IP connects fine. Fix space: pin/pre-
+//     resolve addresses — a completely different, deterministic change.
+//   • SNI/TLS filtering: SYN connects, TLS handshake with the real SNI is reset
+//     (RST/ECONNRESET) or hangs, even though the raw SYN succeeded.
+// Run ONLY when cnBlackhole is already true (never on healthy rounds, so zero
+// steady-state overhead), against ONE mainland host, fully time-bounded and
+// wrapped so it can neither fail nor meaningfully slow the round. Separates the
+// stages so the next fix is chosen on observation, not on another guess.
+//
+// Two review-driven refinements (Codex P1):
+//  1. The SYN stage MUST NOT depend on the DNS lookup being diagnosed — if DNS
+//     is the failing stage, dns.ip is null and a DNS-gated SYN would be skipped,
+//     making a resolver stall indistinguishable from a network blackhole. So the
+//     SYN runs against a STATIC known-mainland IP literal (no DNS at all); it
+//     proves whether literal-IP networking to the mainland works regardless of
+//     the resolver. (A blackhole drops SYNs to the whole mainland, so the exact
+//     host behind the literal is irrelevant; a stale-but-real mainland IP still
+//     tests the path.) We ALSO record the DNS result and, if DNS gave an IP,
+//     a SYN to that resolved IP for completeness.
+//  2. When the SYN succeeds we attempt a bounded TLS handshake with the real
+//     hostname as SNI, so SNI/TLS filtering is OBSERVED (tlsOk:false + reset)
+//     rather than inferred from "syn worked but the round failed".
+type StageResult = { ms: number | null; ok: boolean; error: string | null }
+type BlackholeStageDiag = {
+  host: string
+  // DNS resolution of the real mainland host (stage 1)
+  dnsMs: number | null
+  dnsOk: boolean
+  dnsError: string | null
+  resolvedIp: string | null
+  // raw SYN to a STATIC mainland IP literal — DNS entirely out of the path
+  synStaticIp: string
+  synStaticMs: number | null
+  synStaticOk: boolean
+  synStaticError: string | null
+  // raw SYN to the DNS-resolved IP (only if DNS succeeded) — for completeness
+  synResolvedMs: number | null
+  synResolvedOk: boolean
+  synResolvedError: string | null
+  // bounded TLS handshake with the real SNI, only attempted if a SYN succeeded
+  tlsMs: number | null
+  tlsOk: boolean
+  tlsError: string | null
+}
+
+// Static mainland IP literals across CSPs (Alibaba OSS Hangzhou/Beijing, Tencent
+// COS Beijing) for the DNS-independent SYN test. Multiple entries so a rotated
+// IP doesn't blind the probe; the first reachable is used. These only need to be
+// real mainland-hosted addresses — a GFW blackhole drops SYNs to the whole
+// mainland, so the exact host is immaterial. Captured 2026-09-28.
+const MAINLAND_IP_LITERALS = ['118.31.219.230', '59.110.190.88', '82.156.94.45']
+
+function timedDnsLookup(host: string, timeoutMs: number): Promise<{ ms: number; ip: string | null; error: string | null }> {
+  return new Promise((resolve) => {
+    const t0 = performance.now()
+    let done = false
+    const timer = setTimeout(() => {
+      if (done) return
+      done = true
+      resolve({ ms: performance.now() - t0, ip: null, error: 'timeout' })
+    }, timeoutMs)
+    try {
+      // ipv4first is set process-wide; ask for a single A record.
+      dnsLookup(host, { family: 4 }, (err, address) => {
+        if (done) {
+          clearTimeout(timer)
+          return
+        }
+        done = true
+        clearTimeout(timer)
+        if (err) resolve({ ms: performance.now() - t0, ip: null, error: (err as NodeJS.ErrnoException).code || err.name || 'error' })
+        else resolve({ ms: performance.now() - t0, ip: address, error: null })
+      })
+    } catch (err) {
+      if (done) {
+        clearTimeout(timer)
+        return
+      }
+      done = true
+      clearTimeout(timer)
+      resolve({ ms: performance.now() - t0, ip: null, error: (err as NodeJS.ErrnoException)?.code || 'error' })
+    }
+  })
+}
+
+function timedTcpConnect(ip: string, port: number, timeoutMs: number): Promise<StageResult> {
+  return new Promise((resolve) => {
+    const t0 = performance.now()
+    let settled = false
+    const finish = (ok: boolean, error: string | null) => {
+      if (settled) return
+      settled = true
+      try {
+        socket.destroy()
+      } catch {
+        /* ignore */
+      }
+      resolve({ ms: performance.now() - t0, ok, error })
+    }
+    // connect to a literal IP so DNS is entirely out of the path; a network
+    // blackhole shows here as a bare SYN timeout with no bytes exchanged.
+    const socket = netConnect({ host: ip, port, family: 4 })
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => finish(true, null))
+    socket.once('timeout', () => finish(false, 'timeout'))
+    socket.once('error', (err: NodeJS.ErrnoException) => finish(false, err.code || err.name || 'error'))
+  })
+}
+
+// Bounded TLS handshake to (ip, port) presenting `servername` as SNI. SNI-based
+// filtering surfaces here as a reset/hang AFTER a clean SYN, distinguishing it
+// from a network blackhole (which fails at SYN) and from a healthy path.
+function timedTlsHandshake(ip: string, port: number, servername: string, timeoutMs: number): Promise<StageResult> {
+  return new Promise((resolve) => {
+    const t0 = performance.now()
+    let settled = false
+    let socket: ReturnType<typeof tlsConnect> | undefined
+    const timer = setTimeout(() => finish(false, 'timeout'), timeoutMs)
+    function finish(ok: boolean, error: string | null) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try {
+        socket?.destroy()
+      } catch {
+        /* ignore */
+      }
+      resolve({ ms: performance.now() - t0, ok, error })
+    }
+    try {
+      // Connect to the literal IP but present the real hostname as SNI. We only
+      // care whether the handshake COMPLETES, not whether the cert validates, so
+      // rejectUnauthorized:false keeps a cert mismatch (we're dialing an IP) from
+      // masking the SNI-filter signal we're actually testing for.
+      socket = tlsConnect({ host: ip, port, servername, rejectUnauthorized: false }, () => finish(true, null))
+      socket.once('error', (err: NodeJS.ErrnoException) => finish(false, err.code || err.name || 'error'))
+    } catch (err) {
+      finish(false, (err as NodeJS.ErrnoException)?.code || 'error')
+    }
+  })
+}
+
+async function diagnoseBlackhole(url: string): Promise<BlackholeStageDiag | null> {
+  let host: string
+  let port: number
+  try {
+    const u = new URL(url)
+    host = u.hostname
+    port = u.port ? Number(u.port) : u.protocol === 'https:' ? 443 : 80
+  } catch {
+    return null
+  }
+  // Stage 1: resolve DNS for the real host (time-bounded). A hang here means the
+  // round's `timeout` was a DNS stall.
+  const dns = await timedDnsLookup(host, 3000)
+
+  // Stage 2a: raw SYN to a STATIC mainland IP literal — NO DNS in the path, so
+  // this runs even when stage 1 hung. This is the decisive network-vs-DNS test:
+  // if this SYN times out, the egress path to the mainland is blackholed; if it
+  // connects while DNS failed, the failure was the resolver.
+  let synStatic: StageResult = { ms: null, ok: false, error: 'no-literal' }
+  let synStaticIp = MAINLAND_IP_LITERALS[0] ?? ''
+  for (const ip of MAINLAND_IP_LITERALS) {
+    synStaticIp = ip
+    synStatic = await timedTcpConnect(ip, 443, 3000)
+    if (synStatic.ok) break // a reachable literal is enough
+  }
+
+  // Stage 2b: raw SYN to the DNS-resolved IP (only if DNS gave one) for a direct
+  // comparison against the same host the round actually tried.
+  let synResolved: StageResult = { ms: null, ok: false, error: 'skipped-no-ip' }
+  if (dns.ip) synResolved = await timedTcpConnect(dns.ip, port, 3000)
+
+  // Stage 3: bounded TLS handshake with the real SNI, over whichever IP just
+  // connected at the TCP layer (prefer the resolved host's IP; fall back to the
+  // static literal). Only meaningful if some SYN succeeded.
+  let tls: StageResult = { ms: null, ok: false, error: 'skipped-no-syn' }
+  const tlsIp = synResolved.ok && dns.ip ? dns.ip : synStatic.ok ? synStaticIp : null
+  if (tlsIp) tls = await timedTlsHandshake(tlsIp, 443, host, 3000)
+
+  return {
+    host,
+    dnsMs: Math.round(dns.ms),
+    dnsOk: dns.ip !== null,
+    dnsError: dns.error,
+    resolvedIp: dns.ip,
+    synStaticIp,
+    synStaticMs: synStatic.ms === null ? null : Math.round(synStatic.ms),
+    synStaticOk: synStatic.ok,
+    synStaticError: synStatic.error,
+    synResolvedMs: synResolved.ms === null ? null : Math.round(synResolved.ms),
+    synResolvedOk: synResolved.ok,
+    synResolvedError: synResolved.error,
+    tlsMs: tls.ms === null ? null : Math.round(tls.ms),
+    tlsOk: tls.ok,
+    tlsError: tls.error,
+  }
 }
 
 export type { ProbeResult, ProbeSnapshot } from './probe-snapshot'
@@ -730,6 +940,26 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
     const hkOk = hkResults.filter((r) => r.ok).length
     const cnBlackhole = mainlandResults.length > 0 && mainlandOk === 0 && hkOk > 0
 
+    // On a blackhole round only, run the stage-separating diagnostic against one
+    // mainland host (DNS timing/result + a raw SYN to the resolved IP literal)
+    // to observe whether the `timeout` is a network blackhole, a DNS stall, or
+    // SNI/TLS filtering — the observation that picks the next fix. Never runs on
+    // healthy rounds, so it adds no steady-state cost; fully wrapped so it can
+    // neither fail nor materially slow the round.
+    let blackholeStage: BlackholeStageDiag | null = null
+    if (cnBlackhole && mainlandResults.length > 0) {
+      // Map the first mainland result back to its job to recover the ping_url.
+      const firstMainland = mainlandResults[0]
+      const mlJob = jobs.find((j) => j.provider === firstMainland.provider && j.region.key === firstMainland.region)
+      if (mlJob?.region.ping_url) {
+        try {
+          blackholeStage = await diagnoseBlackhole(mlJob.region.ping_url)
+        } catch {
+          blackholeStage = null
+        }
+      }
+    }
+
     // The egress-IP lookup was fired at round start; it resolves to a validated
     // IPv4 string or null (never rejects). Awaiting here adds no latency in
     // practice — it has had the entire pool duration to complete. Sample again
@@ -762,6 +992,7 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
         cnBlackhole,
         chinaMainland: { attempted: mainlandResults.length, ok: mainlandOk },
         hongKong: { attempted: hkResults.length, ok: hkOk },
+        blackholeStage,
         firstFailedIndex,
         lastFailedIndex,
         longestFailureBlock,
