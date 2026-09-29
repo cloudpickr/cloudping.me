@@ -97,31 +97,29 @@ function LatencyChart({ points, mode, label }: { points: HistoryPoint[]; mode: '
       msMin = Math.max(0, msMin - 5)
       msMax = msMax + 5
     }
-    // X timeline. 24h: the fixed window (now-24h..now); the ~30-min samples reach
-    // both edges so it already fills the axis. 7d: anchor to the DATA SPAN
-    // [first point .. last point] instead of the fixed now-7d..now window. The
-    // daily points sit at each day's local NOON, so under a fixed window the
-    // oldest/newest points fall ~half a day inside the edges and the Daily series
-    // renders left-shifted with a big left gap — visibly misaligned with the 24h
-    // graph above it and the 2h view. Using the data span makes the first point
-    // hug the left edge and the last point the right edge, so all three charts
-    // line up. (2h already nearly fills the window, so this doesn't move it.)
+    // Fixed x timeline: always span the full window (now-24h..now or now-7d..now)
+    // so a partially-filled series reads as "still accumulating" rather than
+    // being stretched to fill the axis.
     const windowSec = mode === '24h' ? 24 * 3600 : 7 * 86400
-    const now = Math.floor(Date.now() / 1000)
-    const tMin = mode === '7d' ? points[0].t : now - windowSec
-    const tMax = mode === '7d' ? points[points.length - 1].t : now
-    const spanT = tMax - tMin || windowSec
+    const tMax = Math.floor(Date.now() / 1000)
+    const tMin = tMax - windowSec
+    const spanT = windowSec
     const spanMs = msMax - msMin || 1
-    // Inset the plotted data horizontally so the first point doesn't sit flush on
-    // the y-axis line/labels and the last doesn't touch the right edge. Without
-    // it the dense 24h series starts hard against the y-axis numbers while the
-    // sparser 7d series looks like it has breathing room — the same X_INSET on
-    // every mode makes all three charts start/end with an identical gap.
-    const X_INSET = 14
-    const xLeft = PAD_L + X_INSET
-    const xRight = CHART_W - PAD_R - X_INSET
+    // Clamp x to the plot bounds. The 7d "Daily" points are anchored at each
+    // day's local NOON, so a boundary day can land just OUTSIDE the fixed window
+    // (today's noon is after `tMax` before local noon; the oldest day's noon can
+    // precede `tMin` after noon). Without clamping, that endpoint renders off the
+    // SVG viewport — its marker/segment disappears while its value still drives
+    // the y-axis range. Clamping the X position (not the value) keeps the point
+    // visible at the window edge; the fixed window still means partial history
+    // reads as "still accumulating".
+    const xEdgeL = PAD_L
+    const xEdgeR = CHART_W - PAD_R
     const scale: Scale = {
-      x: (t) => xLeft + ((t - tMin) / spanT) * (xRight - xLeft),
+      x: (t) => {
+        const px = PAD_L + ((t - tMin) / spanT) * (CHART_W - PAD_L - PAD_R)
+        return px < xEdgeL ? xEdgeL : px > xEdgeR ? xEdgeR : px
+      },
       y: (v) => PAD_T + (1 - (v - msMin) / spanMs) * (CHART_H - PAD_T - PAD_B),
     }
     const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${scale.x(p.t).toFixed(1)},${scale.y(p.ms).toFixed(1)}`).join(' ')
@@ -155,14 +153,9 @@ function LatencyChart({ points, mode, label }: { points: HistoryPoint[]; mode: '
         const t = Math.floor(cur.getTime() / 1000)
         if (t >= tMin) days.push(t)
       }
-      // The window now hugs the data (first/last points sit on the edges), so the
-      // first/last day labels would clip the y-axis / right edge with a centered
-      // anchor. Anchor the leftmost 'start' and rightmost 'end' (like the 24h axis)
-      // and center the rest — so every day stays labelled and aligned.
-      xTicks = days.map((t, i) => ({
-        t,
-        anchor: i === 0 ? 'start' : i === days.length - 1 ? 'end' : 'middle',
-      }))
+      // Drop a leading tick too close to the y-axis so its label can't collide with it.
+      const minX = PAD_L + 14
+      xTicks = days.filter((t) => scale.x(t) >= minX).map((t) => ({ t, anchor: 'middle' as const }))
     }
     const yTicks = [msMin, (msMin + msMax) / 2, msMax]
     return { scale, d, area, tMin, tMax, msMin, msMax, xTicks, yTicks }
