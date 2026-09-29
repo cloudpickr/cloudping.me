@@ -97,26 +97,20 @@ function LatencyChart({ points, mode, label }: { points: HistoryPoint[]; mode: '
       msMin = Math.max(0, msMin - 5)
       msMax = msMax + 5
     }
-    // X timeline. 24h: the fixed window (now-24h..now); the ~30-min samples reach
-    // both edges so it already fills the axis. 7d: anchor to the DATA SPAN
-    // [first point .. last point] instead of the fixed now-7d..now window. The
-    // daily points sit at each day's local NOON, so under a fixed window the
-    // oldest/newest points fall ~half a day inside the edges and the Daily series
-    // renders left-shifted with a big left gap — visibly misaligned with the 24h
-    // graph above it and the 2h view. Using the data span makes the first point
-    // hug the left edge and the last point the right edge, so all three charts
-    // line up. (2h already nearly fills the window, so this doesn't move it.)
-    const windowSec = mode === '24h' ? 24 * 3600 : 7 * 86400
-    const now = Math.floor(Date.now() / 1000)
-    const tMin = mode === '7d' ? points[0].t : now - windowSec
-    const tMax = mode === '7d' ? points[points.length - 1].t : now
-    const spanT = tMax - tMin || windowSec
+    // X timeline. Anchor EVERY mode to the DATA SPAN [first point .. last point]
+    // so the first sample lands on the left inset and the last on the right inset
+    // identically across all three charts (24h, 7d Daily, 7d 2h). A fixed
+    // now-window doesn't line up: the first/last samples fall a few px inside the
+    // edges (24h) or ~half a day inside (7d daily, whose points sit at local
+    // noon), so the charts started/ended at slightly different x. Data-span makes
+    // all three share the exact same start and end x.
+    const tMin = points[0].t
+    const tMax = points[points.length - 1].t
+    const spanT = tMax - tMin || (mode === '24h' ? 24 * 3600 : 7 * 86400)
     const spanMs = msMax - msMin || 1
     // Inset the plotted data horizontally so the first point doesn't sit flush on
-    // the y-axis line/labels and the last doesn't touch the right edge. Without
-    // it the dense 24h series starts hard against the y-axis numbers while the
-    // sparser 7d series looks like it has breathing room — the same X_INSET on
-    // every mode makes all three charts start/end with an identical gap.
+    // the y-axis line/labels and the last doesn't touch the right edge — a small,
+    // equal gap on both sides, the same on every chart.
     const X_INSET = 14
     const xLeft = PAD_L + X_INSET
     const xRight = CHART_W - PAD_R - X_INSET
@@ -137,11 +131,20 @@ function LatencyChart({ points, mode, label }: { points: HistoryPoint[]; mode: '
     // has room so its label doesn't collide with the y-axis.
     let xTicks: { t: number; anchor: 'start' | 'middle' | 'end' }[]
     if (mode === '24h') {
-      const xTickCount = 4
-      xTicks = Array.from({ length: xTickCount }, (_, k) => ({
-        t: tMin + Math.round((k / (xTickCount - 1)) * windowSec),
-        anchor: k === 0 ? 'start' : k === xTickCount - 1 ? 'end' : 'middle',
-      }))
+      if (tMax === tMin) {
+        // Zero-span (a single sample, or duplicate-only timestamps): the scale
+        // uses a fallback denominator to stay finite, but we must NOT spread ticks
+        // across that synthetic window — that would print future clock labels
+        // (sample, +8h, +16h, +24h) under "Last 24h". Show one tick at the real
+        // timestamp instead, anchored at the left edge where the sole point sits.
+        xTicks = [{ t: tMin, anchor: 'start' }]
+      } else {
+        const xTickCount = 4
+        xTicks = Array.from({ length: xTickCount }, (_, k) => ({
+          t: tMin + Math.round((k / (xTickCount - 1)) * spanT),
+          anchor: k === 0 ? 'start' : k === xTickCount - 1 ? 'end' : 'middle',
+        }))
+      }
     } else {
       // 7d: one tick per LOCAL calendar day the window covers, placed at local noon.
       // Data is UTC but we re-derive ticks on the viewer's local day boundaries so
