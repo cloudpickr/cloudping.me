@@ -18,9 +18,21 @@ name: Reachability monitors
 #    are recorded but stay quiet.
 
 on:
+  # Primary trigger: run right after each Probe round completes. GitHub often
+  # delays or DROPS scheduled cron on public repos under load (observed: the old
+  # :12,:42 cron fired only ~once every few hours), which would make the monitor
+  # miss the consecutive-round windows its triggers depend on. The Probe workflow
+  # runs reliably every 30 min, so chaining off its completion guarantees the
+  # monitor runs whenever fresh data is published. workflow_run fires even if that
+  # Probe run SKIPPED publishing (it still completes) — the monitor reads the
+  # public latest.json regardless, so a skipped round is harmless.
+  workflow_run:
+    workflows: ['Probe']
+    types: [completed]
+  # Backup reconciliation only, in case a workflow_run event is missed: a sparse
+  # hourly cron (not :12,:42) so we don't rely solely on GitHub's flaky scheduler.
   schedule:
-    # A few minutes after the probe's :07/:37 rounds so latest.json is fresh.
-    - cron: '12,42 * * * *'
+    - cron: '25 * * * *'
   workflow_dispatch: {}
 
 permissions:
