@@ -97,13 +97,20 @@ function LatencyChart({ points, mode, label }: { points: HistoryPoint[]; mode: '
       msMin = Math.max(0, msMin - 5)
       msMax = msMax + 5
     }
-    // Fixed x timeline: always span the full window (now-24h..now or now-7d..now)
-    // so a partially-filled series reads as "still accumulating" rather than
-    // being stretched to fill the axis.
+    // X timeline. 24h: the fixed window (now-24h..now); the ~30-min samples reach
+    // both edges so it already fills the axis. 7d: anchor to the DATA SPAN
+    // [first point .. last point] instead of the fixed now-7d..now window. The
+    // daily points sit at each day's local NOON, so under a fixed window the
+    // oldest/newest points fall ~half a day inside the edges and the Daily series
+    // renders left-shifted with a big left gap — visibly misaligned with the 24h
+    // graph above it and the 2h view. Using the data span makes the first point
+    // hug the left edge and the last point the right edge, so all three charts
+    // line up. (2h already nearly fills the window, so this doesn't move it.)
     const windowSec = mode === '24h' ? 24 * 3600 : 7 * 86400
-    const tMax = Math.floor(Date.now() / 1000)
-    const tMin = tMax - windowSec
-    const spanT = windowSec
+    const now = Math.floor(Date.now() / 1000)
+    const tMin = mode === '7d' ? points[0].t : now - windowSec
+    const tMax = mode === '7d' ? points[points.length - 1].t : now
+    const spanT = tMax - tMin || windowSec
     const spanMs = msMax - msMin || 1
     const scale: Scale = {
       x: (t) => PAD_L + ((t - tMin) / spanT) * (CHART_W - PAD_L - PAD_R),
@@ -140,9 +147,14 @@ function LatencyChart({ points, mode, label }: { points: HistoryPoint[]; mode: '
         const t = Math.floor(cur.getTime() / 1000)
         if (t >= tMin) days.push(t)
       }
-      // Drop a leading tick too close to the y-axis so its label can't collide with it.
-      const minX = PAD_L + 14
-      xTicks = days.filter((t) => scale.x(t) >= minX).map((t) => ({ t, anchor: 'middle' as const }))
+      // The window now hugs the data (first/last points sit on the edges), so the
+      // first/last day labels would clip the y-axis / right edge with a centered
+      // anchor. Anchor the leftmost 'start' and rightmost 'end' (like the 24h axis)
+      // and center the rest — so every day stays labelled and aligned.
+      xTicks = days.map((t, i) => ({
+        t,
+        anchor: i === 0 ? 'start' : i === days.length - 1 ? 'end' : 'middle',
+      }))
     }
     const yTicks = [msMin, (msMin + msMax) / 2, msMax]
     return { scale, d, area, tMin, tMax, msMin, msMax, xTicks, yTicks }
