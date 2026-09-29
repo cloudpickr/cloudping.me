@@ -112,8 +112,16 @@ function LatencyChart({ points, mode, label }: { points: HistoryPoint[]; mode: '
     const tMax = mode === '7d' ? points[points.length - 1].t : now
     const spanT = tMax - tMin || windowSec
     const spanMs = msMax - msMin || 1
+    // Inset the plotted data horizontally so the first point doesn't sit flush on
+    // the y-axis line/labels and the last doesn't touch the right edge. Without
+    // it the dense 24h series starts hard against the y-axis numbers while the
+    // sparser 7d series looks like it has breathing room — the same X_INSET on
+    // every mode makes all three charts start/end with an identical gap.
+    const X_INSET = 14
+    const xLeft = PAD_L + X_INSET
+    const xRight = CHART_W - PAD_R - X_INSET
     const scale: Scale = {
-      x: (t) => PAD_L + ((t - tMin) / spanT) * (CHART_W - PAD_L - PAD_R),
+      x: (t) => xLeft + ((t - tMin) / spanT) * (xRight - xLeft),
       y: (v) => PAD_T + (1 - (v - msMin) / spanMs) * (CHART_H - PAD_T - PAD_B),
     }
     const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${scale.x(p.t).toFixed(1)},${scale.y(p.ms).toFixed(1)}`).join(' ')
