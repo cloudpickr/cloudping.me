@@ -105,8 +105,21 @@ function LatencyChart({ points, mode, label }: { points: HistoryPoint[]; mode: '
     const tMin = tMax - windowSec
     const spanT = windowSec
     const spanMs = msMax - msMin || 1
+    // Clamp x to the plot bounds. The 7d "Daily" points are anchored at each
+    // day's local NOON, so a boundary day can land just OUTSIDE the fixed window
+    // (today's noon is after `tMax` before local noon; the oldest day's noon can
+    // precede `tMin` after noon). Without clamping, that endpoint renders off the
+    // SVG viewport — its marker/segment disappears while its value still drives
+    // the y-axis range. Clamping the X position (not the value) keeps the point
+    // visible at the window edge; the fixed window still means partial history
+    // reads as "still accumulating".
+    const xEdgeL = PAD_L
+    const xEdgeR = CHART_W - PAD_R
     const scale: Scale = {
-      x: (t) => PAD_L + ((t - tMin) / spanT) * (CHART_W - PAD_L - PAD_R),
+      x: (t) => {
+        const px = PAD_L + ((t - tMin) / spanT) * (CHART_W - PAD_L - PAD_R)
+        return px < xEdgeL ? xEdgeL : px > xEdgeR ? xEdgeR : px
+      },
       y: (v) => PAD_T + (1 - (v - msMin) / spanMs) * (CHART_H - PAD_T - PAD_B),
     }
     const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${scale.x(p.t).toFixed(1)},${scale.y(p.ms).toFixed(1)}`).join(' ')
