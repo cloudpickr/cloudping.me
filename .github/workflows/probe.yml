@@ -403,7 +403,13 @@ jobs:
           git add latest.json history.json vercel.json
           if [ -d h ]; then git add h; fi
           git commit -m "probe $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 0
-          git push --force origin HEAD:status
+          # Retry push to ride out transient GitHub 500s on the status branch.
+          for attempt in 1 2 3; do
+            git push --force origin HEAD:status && break
+            [ "${attempt}" -eq 3 ] && { echo "push failed after 3 attempts" >&2; exit 1; }
+            echo "push attempt ${attempt} failed; retrying in $((attempt * 10))s..." >&2
+            sleep $((attempt * 10))
+          done
           cp latest.json /tmp/latest.json
 
       # Mirror latest.json to Vercel Blob (primary read path for /health).
