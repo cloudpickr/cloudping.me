@@ -98,6 +98,7 @@ function GeoSection({
           <input
             type="checkbox"
             className="form-checkbox w-3.5 h-3.5"
+            aria-label={`Select all ${geo} locations`}
             checked={allSelected}
             ref={(el) => {
               if (el) el.indeterminate = someSelected
@@ -490,7 +491,7 @@ export default function CloudPing(props: CloudPingProps): JSX.Element {
           </p>
           <div className="mb-8">
             <div className="flex items-center justify-between mb-3">
-              <h6 className="text-xs font-medium text-[color:var(--text-muted)] uppercase tracking-wider">Cloud Providers</h6>
+              <h2 className="text-xs font-medium text-[color:var(--text-muted)] uppercase tracking-wider">Cloud Providers</h2>
               <button
                 type="button"
                 className="switch-toggle"
@@ -541,7 +542,7 @@ export default function CloudPing(props: CloudPingProps): JSX.Element {
             <aside className={`w-full lg:w-60 flex-shrink-0 ${isFilterOpen ? 'block' : 'hidden lg:block'}`}>
               <div className="rounded-xl border border-[color:var(--border)] p-4 sticky top-4">
                 <div className="flex items-center justify-between mb-4">
-                  <h5 className="text-sm font-medium text-[color:var(--text-secondary)]">Locations</h5>
+                  <h2 className="text-sm font-medium text-[color:var(--text-secondary)]">Locations</h2>
                   <button
                     type="button"
                     className="switch-toggle"
@@ -576,7 +577,7 @@ export default function CloudPing(props: CloudPingProps): JSX.Element {
             <main className="flex-1 min-w-0">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-3">
-                  <h5 className="text-sm font-medium text-[color:var(--text-secondary)]">Latency Results</h5>
+                  <h2 className="text-sm font-medium text-[color:var(--text-secondary)]">Latency Results</h2>
                   {isMeasuring && <span className="measuring-dot" title="Measuring…" />}
                   <span className="text-xs text-[color:var(--text-muted)] tabular-nums">
                     {sortedRegionsWithLatency.length} / {sortedRegions.length} {isMeasuring ? 'measuring…' : 'measured'}
