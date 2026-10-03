@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-time (idempotent) bootstrap for GitHub Actions -> Azure OIDC deploy auth.
 # Creates an Azure AD app registration + federated credential (no client
-# secret) trusted only for pushes to main on froguin/cloudping.me, and grants
+# secret) trusted only for pushes to main on cloudpickr/cloudping.me, and grants
 # it "Website Contributor" scoped to the cloudping-probe resource group only
 # (can deploy code to the 11 existing F1 apps, cannot create/delete plans or
 # apps, cannot touch anything outside that resource group).
@@ -18,8 +18,17 @@ set -euo pipefail
 
 APP_NAME="cloudping-github-deploy"
 RG="cloudping-probe"
-REPO_ID="froguin/cloudping.me"
+REPO_ID="cloudpickr/cloudping.me"
 BRANCH="main"
+
+# OIDC subject. As of GitHub's 2026-07-15 change, repos created/renamed/
+# transferred use the immutable `sub` claim form
+# repo:<owner>@<OWNER_ID>/<name>@<REPO_ID>:ref:refs/heads/<branch> rather than
+# the slug-based form. Override OIDC_SUBJECT if the owner/repo IDs differ; look
+# it up with:
+#   gh api repos/${REPO_ID}/actions/oidc/customization/sub --jq .sub_claim_prefix
+# (append ":ref:refs/heads/${BRANCH}"). The default below matches cloudpickr.
+OIDC_SUBJECT="${OIDC_SUBJECT:-repo:cloudpickr@80160794/cloudping.me@1227660849:ref:refs/heads/${BRANCH}}"
 
 SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
 TENANT_ID="$(az account show --query tenantId -o tsv)"
@@ -49,7 +58,7 @@ if ! az ad app federated-credential list --id "${APP_ID}" --query "[?name=='gith
 {
   "name": "github-main",
   "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:${REPO_ID}:ref:refs/heads/${BRANCH}",
+  "subject": "${OIDC_SUBJECT}",
   "audiences": ["api://AzureADTokenExchange"]
 }
 JSON

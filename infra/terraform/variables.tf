@@ -79,6 +79,33 @@ variable "azure_probe_regions" {
   ]
 }
 
+variable "github_repo" {
+  type        = string
+  description = "GitHub repo slug (owner/name) for the GCP WIF repository claim and the clock Lambda workflow_dispatch target. Plaintext, non-secret. Change this when transferring the repo to a new owner."
+  default     = "cloudpickr/cloudping.me"
+}
+
+# AWS/Azure OIDC subject strings are kept as full-string variables rather than
+# derived from github_repo. As of GitHub's July 15, 2026 change, transferring or
+# renaming a repo switches the OIDC `sub` claim to the immutable format
+# `repo:<owner>@<OWNER_ID>/<name>@<REPO_ID>:ref:refs/heads/main`, so the subject
+# can no longer be reconstructed from the slug alone. At transfer time, look up
+# the new subject (GitHub OIDC settings "preview" endpoint, or the token claim
+# after transfer) and set these two variables, then `terraform apply`. The GCP
+# `assertion.repository` / `attribute.repository` claims are unaffected and keep
+# using github_repo. See infra/terraform/README.md.
+variable "aws_oidc_subject" {
+  type        = string
+  description = "Full GitHub Actions OIDC `sub` claim trusted by the AWS deployer/invoker IAM roles. Post-2026-07-15 transfers use the immutable form repo:<owner>@<OWNER_ID>/<name>@<REPO_ID>:ref:refs/heads/main."
+  default     = "repo:cloudpickr@80160794/cloudping.me@1227660849:ref:refs/heads/main"
+}
+
+variable "azure_oidc_subject" {
+  type        = string
+  description = "Full GitHub Actions OIDC `sub` claim trusted by the Azure AD federated credential. Post-2026-07-15 transfers use the immutable form repo:<owner>@<OWNER_ID>/<name>@<REPO_ID>:ref:refs/heads/main."
+  default     = "repo:cloudpickr@80160794/cloudping.me@1227660849:ref:refs/heads/main"
+}
+
 variable "probe_secret" {
   type        = string
   description = "Bearer secret for cloudping probes (set via HCP workspace variable, sensitive)"

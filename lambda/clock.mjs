@@ -1,7 +1,7 @@
 // Defaults target the canonical deployment. When running this clock Lambda from
 // a fork, set GITHUB_REPO (and optionally GITHUB_WORKFLOW / GITHUB_REF) so the
-// workflow_dispatch hits your own repository instead of froguin/cloudping.me.
-const DEFAULT_REPO = 'froguin/cloudping.me'
+// workflow_dispatch hits your own repository instead of cloudpickr/cloudping.me.
+const DEFAULT_REPO = 'cloudpickr/cloudping.me'
 const DEFAULT_WORKFLOW = 'probe.yml'
 const DEFAULT_REF = 'main'
 

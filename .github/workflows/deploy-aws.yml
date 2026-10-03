@@ -8,7 +8,7 @@ name: Deploy AWS Lambda probes
 # Auth is OIDC via the existing GitHub OIDC provider (same one probe.yml
 # already uses for cloudping-probe-invoker), assuming a separate
 # cloudping-deployer role trusted only for
-# `repo:froguin/cloudping.me:ref:refs/heads/main`, scoped to
+# `repo:cloudpickr/cloudping.me:ref:refs/heads/main`, scoped to
 # lambda:UpdateFunctionCode/GetFunction(Configuration) on the 13
 # cloudping-probe function ARNs only.
 #

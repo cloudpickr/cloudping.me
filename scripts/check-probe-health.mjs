@@ -25,7 +25,7 @@
 // Exit 0 always unless the history fetch/parse fails (then non-zero so the
 // workflow surfaces real breakage).
 
-const HISTORY_URL = process.env.HISTORY_URL || 'https://raw.githubusercontent.com/froguin/cloudping.me/status/history.json'
+const HISTORY_URL = process.env.HISTORY_URL || 'https://raw.githubusercontent.com/cloudpickr/cloudping.me/status/history.json'
 const FETCH_TIMEOUT_MS = 20000
 
 // A cell with < this fraction of its origin's typical sample count is "starved".

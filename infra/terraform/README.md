@@ -6,6 +6,53 @@ the deploy-pipeline identities into Terraform state managed by **HCP Terraform**
 layer, not the deploy path — actual code deploys still run through
 `.github/workflows/deploy-*.yml` and `*/deploy.sh`.
 
+## Repo path & transferring to a new owner
+
+The GitHub repo path (`cloudpickr/cloudping.me`) that the OIDC trust and the clock
+Lambda depend on is centralized into three plaintext (non-secret) variables in
+`variables.tf`:
+
+- `github_repo` — slug `owner/name`. Used by the GCP WIF `assertion.repository`
+  condition + IAM `attribute.repository` member, and the clock Lambda's
+  `GITHUB_REPO` dispatch target.
+- `aws_oidc_subject` / `azure_oidc_subject` — the **full** GitHub Actions OIDC
+  `sub` claim trusted by the AWS IAM roles and the Azure AD federated credential.
+
+Why two kinds: as of GitHub's 2026-07-15 change, **renaming or transferring a
+repo switches the OIDC `sub` claim to the immutable format**
+`repo:<owner>@<OWNER_ID>/<name>@<REPO_ID>:ref:refs/heads/main`. The `sub` can no
+longer be rebuilt from the slug, so AWS/Azure take the whole subject string. The
+GCP `assertion.repository` / `attribute.repository` claims are **not** affected
+and keep using the plain slug (`github_repo`).
+
+> These are overridable in the HCP workspace, but this workspace runs
+> `execution-mode = local`, so HCP variable values do **not** apply to local
+> `plan`/`apply` — the `variables.tf` defaults (or `*.auto.tfvars` /
+> `TF_VAR_*`) are what local runs use. Keep the defaults current.
+
+### Transfer cutover procedure
+
+1. **Parameterize first (done):** repo path is centralized in the three
+   variables above; `terraform plan` reports **No changes** against the current
+   `cloudpickr/cloudping.me` deployment.
+2. **Get the new subject** for the destination owner: use GitHub's OIDC settings
+   "preview subject claim" endpoint before transfer, or read the token `sub`
+   after transfer. Grab the new `OWNER_ID` / `REPO_ID`.
+3. **Transfer** the repo to the new owner on GitHub.
+4. **Apply the new identity** locally (local cloud creds, independent of GitHub
+   OIDC): set `github_repo`, `aws_oidc_subject`, `azure_oidc_subject` to the new
+   values and `terraform apply`. Verify each deploy workflow authenticates.
+5. **Minimize downtime (optional):** to avoid an auth gap, add dual trust before
+   transfer — both old+new AWS subjects, both GCP repository conditions/IAM
+   members, and a second Azure federated credential — then remove the old trust
+   after step 4 verifies.
+
+Also confirm the clock Lambda's `GITHUB_DISPATCH_TOKEN` can reach the
+transferred repo, and update the non-Terraform references (e.g. the GitHub link
+in `src/pages/index.tsx`, monitor-workflow `LATEST_URL`/`HISTORY_URL`). The
+`cloudping.me` domain, branding, and the HCP org name do **not** change for a
+repo-path transfer.
+
 ## What's managed (82 resources)
 
 - **AWS (32)**: 13 `cloudping-probe` Lambdas (nodejs24.x), the `cloudping-probe-clock`

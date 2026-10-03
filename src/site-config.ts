@@ -16,8 +16,8 @@ export function getSiteUrl(): string | undefined {
   }
 }
 
-export const DEFAULT_HEALTH_JSON_URL = 'https://raw.githubusercontent.com/froguin/cloudping.me/status/latest.json'
-export const DEFAULT_ORIGIN_HISTORY_BASE = 'https://raw.githubusercontent.com/froguin/cloudping.me/status/h'
+export const DEFAULT_HEALTH_JSON_URL = 'https://raw.githubusercontent.com/cloudpickr/cloudping.me/status/latest.json'
+export const DEFAULT_ORIGIN_HISTORY_BASE = 'https://raw.githubusercontent.com/cloudpickr/cloudping.me/status/h'
 
 export function getHealthJsonUrl(): string {
   return process.env.NEXT_PUBLIC_HEALTH_JSON_URL || DEFAULT_HEALTH_JSON_URL

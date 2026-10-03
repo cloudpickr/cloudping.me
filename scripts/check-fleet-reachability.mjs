@@ -44,8 +44,8 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 
-const LATEST_URL = process.env.LATEST_URL || 'https://raw.githubusercontent.com/froguin/cloudping.me/status/latest.json'
-const HISTORY_URL = process.env.HISTORY_URL || 'https://raw.githubusercontent.com/froguin/cloudping.me/status/history.json'
+const LATEST_URL = process.env.LATEST_URL || 'https://raw.githubusercontent.com/cloudpickr/cloudping.me/status/latest.json'
+const HISTORY_URL = process.env.HISTORY_URL || 'https://raw.githubusercontent.com/cloudpickr/cloudping.me/status/history.json'
 const STATE_PATH = process.env.FLEET_MONITOR_STATE || 'fleet-monitor.json'
 const FETCH_TIMEOUT_MS = 20000
 

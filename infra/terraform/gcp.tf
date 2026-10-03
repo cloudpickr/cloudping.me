@@ -34,7 +34,7 @@ resource "google_iam_workload_identity_pool_provider" "cloudping_provider" {
   workload_identity_pool_provider_id = "cloudping-provider"
   display_name                       = "cloudping GitHub OIDC"
   project                            = var.gcp_project_id
-  attribute_condition                = "assertion.repository=='froguin/cloudping.me'"
+  attribute_condition                = "assertion.repository=='${var.github_repo}'"
 
   attribute_mapping = {
     "attribute.ref"        = "assertion.ref"
@@ -80,24 +80,24 @@ import {
 resource "google_service_account_iam_member" "deployer_wif" {
   service_account_id = google_service_account.cloudping_deployer.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/projects/985711852190/locations/global/workloadIdentityPools/github-pool/attribute.repository/froguin/cloudping.me"
+  member             = "principalSet://iam.googleapis.com/projects/985711852190/locations/global/workloadIdentityPools/github-pool/attribute.repository/${var.github_repo}"
 }
 
 import {
   to = google_service_account_iam_member.deployer_wif
-  id = "projects/${var.gcp_project_id}/serviceAccounts/cloudping-deployer@${var.gcp_project_id}.iam.gserviceaccount.com roles/iam.workloadIdentityUser principalSet://iam.googleapis.com/projects/985711852190/locations/global/workloadIdentityPools/github-pool/attribute.repository/froguin/cloudping.me"
+  id = "projects/${var.gcp_project_id}/serviceAccounts/cloudping-deployer@${var.gcp_project_id}.iam.gserviceaccount.com roles/iam.workloadIdentityUser principalSet://iam.googleapis.com/projects/985711852190/locations/global/workloadIdentityPools/github-pool/attribute.repository/${var.github_repo}"
 }
 
 # Service Account IAM: cloudping-invoker WIF binding
 resource "google_service_account_iam_member" "invoker_wif" {
   service_account_id = google_service_account.cloudping_invoker.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/projects/985711852190/locations/global/workloadIdentityPools/github-pool/attribute.repository/froguin/cloudping.me"
+  member             = "principalSet://iam.googleapis.com/projects/985711852190/locations/global/workloadIdentityPools/github-pool/attribute.repository/${var.github_repo}"
 }
 
 import {
   to = google_service_account_iam_member.invoker_wif
-  id = "projects/${var.gcp_project_id}/serviceAccounts/cloudping-invoker@${var.gcp_project_id}.iam.gserviceaccount.com roles/iam.workloadIdentityUser principalSet://iam.googleapis.com/projects/985711852190/locations/global/workloadIdentityPools/github-pool/attribute.repository/froguin/cloudping.me"
+  id = "projects/${var.gcp_project_id}/serviceAccounts/cloudping-invoker@${var.gcp_project_id}.iam.gserviceaccount.com roles/iam.workloadIdentityUser principalSet://iam.googleapis.com/projects/985711852190/locations/global/workloadIdentityPools/github-pool/attribute.repository/${var.github_repo}"
 }
 
 # Service Account IAM: cloudping-invoker token creator binding

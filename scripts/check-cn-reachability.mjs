@@ -39,7 +39,7 @@
 // unless the latest.json fetch/parse fails (then non-zero so real breakage
 // surfaces).
 
-const LATEST_URL = process.env.LATEST_URL || 'https://raw.githubusercontent.com/froguin/cloudping.me/status/latest.json'
+const LATEST_URL = process.env.LATEST_URL || 'https://raw.githubusercontent.com/cloudpickr/cloudping.me/status/latest.json'
 const STATE_PATH = process.env.CN_MONITOR_STATE || 'cn-monitor.json'
 const FETCH_TIMEOUT_MS = 20000
 

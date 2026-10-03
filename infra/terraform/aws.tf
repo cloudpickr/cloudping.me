@@ -96,7 +96,7 @@ resource "aws_iam_role" "cloudping_deployer" {
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-            "token.actions.githubusercontent.com:sub" = "repo:froguin/cloudping.me:ref:refs/heads/main"
+            "token.actions.githubusercontent.com:sub" = var.aws_oidc_subject
           }
         }
       }
@@ -155,7 +155,7 @@ resource "aws_iam_role" "cloudping_probe_invoker" {
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-            "token.actions.githubusercontent.com:sub" = "repo:froguin/cloudping.me:ref:refs/heads/main"
+            "token.actions.githubusercontent.com:sub" = var.aws_oidc_subject
           }
         }
       }
@@ -244,7 +244,7 @@ resource "aws_lambda_function" "clock" {
   environment {
     variables = {
       GITHUB_DISPATCH_TOKEN = var.github_dispatch_token
-      GITHUB_REPO           = "froguin/cloudping.me"
+      GITHUB_REPO           = var.github_repo
       GITHUB_REF            = "main"
       GITHUB_WORKFLOW       = "probe.yml"
     }

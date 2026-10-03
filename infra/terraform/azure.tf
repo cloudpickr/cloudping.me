@@ -105,7 +105,7 @@ resource "azuread_application_federated_identity_credential" "github_main" {
   application_id = azuread_application.deploy.id
   display_name   = "github-main"
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:froguin/cloudping.me:ref:refs/heads/main"
+  subject        = var.azure_oidc_subject
   audiences      = ["api://AzureADTokenExchange"]
 }
 

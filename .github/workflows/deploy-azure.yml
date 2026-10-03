@@ -5,7 +5,7 @@ name: Deploy Azure probes
 # code only -- app settings (PROBE_SECRET, etc.) are never touched here.
 #
 # Auth is OIDC (azure/oidc-setup.sh): a federated Azure AD app trusted only for
-# `repo:froguin/cloudping.me:ref:refs/heads/main`, holding "Website Contributor"
+# `repo:cloudpickr/cloudping.me:ref:refs/heads/main`, holding "Website Contributor"
 # scoped to the cloudping-probe resource group only. No secrets stored.
 #
 # Public repo -> GitHub Actions minutes are free regardless of run time.

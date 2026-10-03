@@ -1,4 +1,4 @@
-module github.com/froguin/cloudping.me/cli
+module github.com/cloudpickr/cloudping.me/cli
 
 go 1.22
 
