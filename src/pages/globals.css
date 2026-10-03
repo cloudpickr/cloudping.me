@@ -251,7 +251,7 @@ h6 { @apply text-xs font-medium; color: var(--text-muted); letter-spacing: 0.04e
   min-height: 2rem;
   padding: 0.3rem 0.75rem;
   border-radius: 7px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 12px;
   font-weight: 500;
   line-height: 1;
