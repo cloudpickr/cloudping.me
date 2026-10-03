@@ -41,8 +41,8 @@ let runSequence = 0
 const server = createServer((req, res) => {
   void (async () => {
     const method = req.method || 'GET'
-    if (method !== 'POST' && method !== 'GET') {
-      res.writeHead(405, { 'content-type': 'application/json', allow: 'GET, POST' })
+    if (method !== 'POST') {
+      res.writeHead(405, { 'content-type': 'application/json', Allow: 'POST' })
       res.end(JSON.stringify({ error: 'method not allowed' }))
       return
     }
