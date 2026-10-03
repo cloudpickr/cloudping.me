@@ -113,7 +113,7 @@ Missing origins are carried forward as `stale` for up to 1 hour, then aged out.
 
 | Cloud | Deploy identity | Scope |
 |-------|-----------------|-------|
-| AWS | `cloudping-deployer` role (OIDC, `main` only) | `lambda:UpdateFunctionCode` on the 12 function ARNs |
+| AWS | `cloudping-deployer` role (OIDC, `main` only) | `lambda:UpdateFunctionCode` on the 13 function ARNs |
 | GCP | `cloudping-deployer` SA (WIF, repo-scoped) | run.admin + artifactregistry.writer + serviceAccountUser |
 | Azure | AD app (federated, `main` only) | Website Contributor on the `cloudping-probe` resource group |
 

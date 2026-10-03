@@ -1,7 +1,7 @@
 {
   "name": "Cloudping.me",
   "short_name": "Cloudping",
-  "description": "Real-time latency tester for 14 cloud providers",
+  "description": "Real-time latency tester for 17 cloud providers",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f172a",

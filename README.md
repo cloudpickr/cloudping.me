@@ -1,6 +1,6 @@
 # ⚡ Cloudping.me
 
-Real-time browser-based latency tester for **15 cloud providers** — including AWS, Azure, GCP, Akamai Cloud, and Korean CSP providers.
+Real-time browser-based latency tester for **17 cloud providers** — including AWS, Azure, GCP, Akamai Cloud, and Korean CSP providers.
 
 🌐 **[cloudping.me](https://cloudping.me)**
 
@@ -8,7 +8,7 @@ Real-time browser-based latency tester for **15 cloud providers** — including 
 
 ## Features
 
-- 🌍 15 cloud providers, 300+ regions worldwide
+- 🌍 17 cloud providers, 300+ regions worldwide
 - 📊 Real-time latency with P50 / P80 / P95 percentiles
 - 🔍 Filter by provider and geographic location
 - 🌙 Dark / Light theme toggle
@@ -68,7 +68,7 @@ The `-provider` flag filters by the provider `key` defined in `src/data/datasour
 latency heatmap (colors: &lt;100 / 100–180 / &gt;180ms).
 
 - **Rows (To)** — cloud regions being measured. **Columns (From)** — probe
-  origins in 25 regions across AWS, GCP, and Azure, grouped by continent then
+  origins in 30 regions across AWS, GCP, and Azure, grouped by continent then
   CSP. Both axes are filterable.
 - Each cell's latest value = the fastest of up to 4 successful HTTP GETs to response
   headers after 2 warmups (at least 3 successes; not from your browser). A 24h P50
