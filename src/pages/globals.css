@@ -475,6 +475,11 @@ button.matrix-swatch.is-off { opacity: 0.4; }
   width: 100%;
   max-width: 100%;
   min-width: 0;
+  /* Reserve the viewport-sized band up front so the loading/empty state holds
+     the same height as the loaded table. Without a min-height the table injects
+     into a short box after the client fetch, shifting the footnote down (large
+     CLS). This is layout-only and does not add DOM/memory. */
+  min-height: calc(100vh - 14rem);
   max-height: calc(100vh - 14rem);
   border: 1px solid var(--border);
   border-radius: 8px;

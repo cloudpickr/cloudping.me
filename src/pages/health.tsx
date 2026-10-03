@@ -1,10 +1,14 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Head from 'next/head'
+import dynamic from 'next/dynamic'
 import { GetStaticPropsResult } from 'next'
 import { CloudProvider, CloudRegion, getAllCloudRegions, getAllProviders } from '@app/data'
 import { CloudProviderLogo } from '@app/components'
 import { SiteHeader } from '@app/components/site-header'
-import { HistoryPanel } from '@app/components/history-panel'
+// HistoryPanel is a sizeable SVG charting component that only renders after a
+// cell click. Load it lazily so its code stays out of the initial /health
+// bundle (smaller parse/hydrate cost — also lighter on low-end mobile).
+const HistoryPanel = dynamic(() => import('@app/components/history-panel').then((m) => m.HistoryPanel), { ssr: false })
 import {
   MatrixSnapshot,
   ProbeColumn,
@@ -720,7 +724,13 @@ export default function Health(props: HealthProps): JSX.Element {
   const loadMatrix = useCallback((opts?: { isInitial?: boolean; signal?: AbortSignal }) => {
     const isInitial = opts?.isInitial ?? false
     if (!isInitial) setRefreshing(true)
-    return fetch('/api/health-matrix', { signal: opts?.signal, cache: 'no-store' })
+    // Let the browser/CDN reuse the API's cached response (the route sets
+    // s-maxage=60, stale-while-revalidate=300). The board only refreshes about
+    // every 30 min, so a <=60s cache is harmless to freshness but lets repeat
+    // visits and reloads paint the matrix immediately instead of waiting on a
+    // fresh upstream round-trip. (Previously `cache: 'no-store'` forced a cold
+    // fetch every load, hurting LCP.)
+    return fetch('/api/health-matrix', { signal: opts?.signal })
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json()
