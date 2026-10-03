@@ -291,7 +291,10 @@ function timedTlsHandshake(ip: string, port: number, servername: string, timeout
       // Connect to the literal IP but present the real hostname as SNI. We only
       // care whether the handshake COMPLETES, not whether the cert validates, so
       // rejectUnauthorized:false keeps a cert mismatch (we're dialing an IP) from
-      // masking the SNI-filter signal we're actually testing for.
+      // masking the SNI-filter signal we're actually testing for. This is a
+      // network-reachability probe, not a data channel — no payload is sent or
+      // trusted over this socket.
+      // codeql[js/disabling-certificate-validation]
       socket = tlsConnect({ host: ip, port, servername, rejectUnauthorized: false }, () => finish(true, null))
       socket.once('error', (err: NodeJS.ErrnoException) => finish(false, err.code || err.name || 'error'))
     } catch (err) {

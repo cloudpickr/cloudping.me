@@ -41,8 +41,11 @@ const server = createServer((req, res) => {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
       res.end(JSON.stringify(snapshot))
     } catch (err) {
+      // Log the detail server-side only; don't leak error internals to clients.
+      // eslint-disable-next-line no-console
+      console.error('probe failed', err)
       res.writeHead(500, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ error: 'probe failed', detail: String(err) }))
+      res.end(JSON.stringify({ error: 'probe failed' }))
     }
   })()
 })

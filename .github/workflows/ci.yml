@@ -17,6 +17,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: this workflow only builds/lints, so it needs read-only
+# access to the checkout and nothing else.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
