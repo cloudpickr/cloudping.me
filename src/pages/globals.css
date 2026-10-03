@@ -489,6 +489,17 @@ button.matrix-swatch.is-off { opacity: 0.4; }
   outline: 2px solid var(--pill-active-border);
   outline-offset: 2px;
 }
+/* Fill the reserved matrix band while loading/empty so the box occupies the
+   same space it will once the table mounts — prevents the loaded table from
+   shifting surrounding layout (CLS). */
+.matrix-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: calc(100vh - 16rem);
+  padding: 3rem 1rem;
+}
 .matrix-table {
   border-collapse: separate;
   border-spacing: 0;

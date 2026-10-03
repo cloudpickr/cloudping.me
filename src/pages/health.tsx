@@ -1256,7 +1256,7 @@ export default function Health(props: HealthProps): JSX.Element {
           </div>
           <div className="matrix-scroll" role="region" aria-label="Cloud latency matrix" tabIndex={0}>
             {rows.length === 0 || visibleColumns.length === 0 ? (
-              <div className="text-center py-12 text-[color:var(--text-muted)]">
+              <div className="matrix-placeholder text-[color:var(--text-muted)]">
                 <p>
                   {snapshot ? 'No regions match the current filters.' : loadError ? 'Waiting for the first probe snapshot.' : 'Loading latest probe snapshot…'}
                 </p>
