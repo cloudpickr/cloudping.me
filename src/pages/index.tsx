@@ -574,7 +574,11 @@ export default function CloudPing(props: CloudPingProps): JSX.Element {
               </div>
             </aside>
             <main className="flex-1 min-w-0">
-              <div className="flex items-center justify-between mb-4">
+              {/* min-h reserves the row height so the legend + Reset button
+                  (which only appear once measurements exist) don't grow this
+                  header row and shove the list down (CLS). The Reset button is
+                  the tallest child (~34px with py-1.5 + border). */}
+              <div className="flex items-center justify-between mb-4 min-h-[34px]">
                 <div className="flex items-center gap-3">
                   <h5 className="text-sm font-medium text-[color:var(--text-secondary)]">Latency Results</h5>
                   {isMeasuring && <span className="measuring-dot" title="Measuring…" />}
