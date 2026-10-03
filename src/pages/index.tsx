@@ -204,31 +204,10 @@ const LatencyCard = memo(function LatencyCard({
             />
           </div>
           <div className="min-w-0 flex-1">
-            {/* Top line: region code (+ provider on sm) + mobile badges */}
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <code className="text-sm font-mono font-medium truncate">{data.region.key}</code>
-                <span className="hidden sm:inline text-xs flex-shrink-0">{data.provider.display_name}</span>
-              </div>
-              {/* Mobile badges */}
-              {isUnreachable ? (
-                <span className="flex sm:hidden text-xs text-red-400 flex-shrink-0" title={`Failed ${data.failureCount} times`}>
-                  ⊘ Unreachable
-                </span>
-              ) : p50 ? (
-                <div className="flex sm:hidden items-center gap-1.5 flex-shrink-0">
-                  <div className="flex flex-col items-center gap-0.5">
-                    <span className={`latency-badge ${getBadgeClass(p50)}`}>{p50}ms</span>
-                    <span className="text-[10px] text-[color:var(--text-muted)] font-medium leading-none">P50</span>
-                  </div>
-                  <div className="flex flex-col items-center gap-0.5">
-                    <span className={`latency-badge ${getBadgeClass(p95)}`}>{p95}ms</span>
-                    <span className="text-[10px] text-[color:var(--text-muted)] font-medium leading-none">P95</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex sm:hidden skeleton w-[86px] h-[34px] flex-shrink-0" />
-              )}
+            {/* Top line: region code (+ provider on sm) */}
+            <div className="flex items-center gap-2 min-w-0">
+              <code className="text-sm font-mono font-medium truncate">{data.region.key}</code>
+              <span className="hidden sm:inline text-xs flex-shrink-0">{data.provider.display_name}</span>
             </div>
             {/* Bottom line: flag + location */}
             <div className="flex items-center gap-1.5 text-xs">
@@ -237,6 +216,27 @@ const LatencyCard = memo(function LatencyCard({
             </div>
           </div>
         </div>
+        {/* Mobile badges (P50/P95) — a sibling of the region column so they
+            center vertically in the full row height instead of being pinned to
+            the region-code line (which left empty space below the values). */}
+        {isUnreachable ? (
+          <span className="flex sm:hidden text-xs text-red-400 flex-shrink-0 items-center" title={`Failed ${data.failureCount} times`}>
+            ⊘ Unreachable
+          </span>
+        ) : p50 ? (
+          <div className="flex sm:hidden items-center gap-1.5 flex-shrink-0">
+            <div className="flex flex-col items-center gap-0.5">
+              <span className={`latency-badge ${getBadgeClass(p50)}`}>{p50}ms</span>
+              <span className="text-[10px] text-[color:var(--text-muted)] font-medium leading-none">P50</span>
+            </div>
+            <div className="flex flex-col items-center gap-0.5">
+              <span className={`latency-badge ${getBadgeClass(p95)}`}>{p95}ms</span>
+              <span className="text-[10px] text-[color:var(--text-muted)] font-medium leading-none">P95</span>
+            </div>
+          </div>
+        ) : (
+          <div className="flex sm:hidden skeleton w-[86px] h-[34px] flex-shrink-0" />
+        )}
         {/* Desktop badges with P50/P80/P95 labels */}
         {isUnreachable ? (
           <span className="hidden sm:flex text-xs text-red-400 flex-shrink-0 items-center gap-1" title={`Failed ${data.failureCount} times`}>
