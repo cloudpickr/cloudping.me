@@ -1,0 +1,46 @@
+name: Close stale monitor issues
+
+# The reachability monitors (cn-reachability.yml) open ONE tracking issue per
+# condition and re-comment every round while the condition persists. When a
+# condition self-heals, its issue stops getting updates. This workflow closes
+# such issues once they've gone quiet, so resolved blips don't linger. If the
+# condition fires again, the monitor re-opens / re-comments and the timer resets.
+#
+# Scope is limited to the two auto-filed labels, so human-authored issues and
+# all pull requests are never touched.
+
+on:
+  schedule:
+    - cron: '17 3 * * *' # daily at 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          # Only monitor-filed issues; never PRs.
+          any-of-labels: 'cn-reachability,fleet-reachability'
+          # Go quiet for 2 days -> mark stale; 1 more day -> close (3 days total).
+          days-before-issue-stale: 2
+          days-before-issue-close: 1
+          stale-issue-label: stale
+          stale-issue-message: >
+            No monitor update for 2 days, so the condition appears to have
+            self-healed. This issue will auto-close in 1 day unless the monitor
+            re-comments or someone removes the `stale` label. It re-opens
+            automatically if the condition fires again.
+          close-issue-message: >
+            Closed automatically after 3 days without a monitor update.
+            Re-opens automatically if the condition recurs.
+          # Never touch PRs with this workflow.
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+          # Any new comment (including the monitor's re-comment) removes 'stale'
+          # and resets the timer.
+          remove-stale-when-updated: true
+          ascending: true
