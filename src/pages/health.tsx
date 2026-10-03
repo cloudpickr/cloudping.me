@@ -22,6 +22,7 @@ import {
   originVendorRank,
   originContinent,
   ORIGIN_CONTINENT_ORDER,
+  ORIGIN_CONTINENTS,
 } from '@app/fns/probe-snapshot'
 import { detectClientGeo } from '@app/fns/client-geo'
 import { getSiteUrl } from '../site-config'
@@ -32,6 +33,19 @@ import { getSiteUrl } from '../site-config'
 // (with ping_url ~19KB and display_name ~10KB across 301 regions) blows the page
 // data past Next.js's 128KB warning threshold, so props carry a slimmed shape.
 type HealthRegion = Pick<CloudRegion, 'key' | 'country' | 'location' | 'geo'>
+
+// Pre-hydration fallbacks for the From-origin filter pills. Before the client
+// matrix fetch resolves, `columns` is empty, so these pills would be absent then
+// appear after load — pushing the matrix down (CLS). Render the stable deployed
+// set at first paint so the pills hold their space and don't change count once
+// data arrives.
+//   - Vendors: the live fleet is aws/gcp/azure (no vercel origin today). Listed
+//     explicitly because ORIGIN_CONTINENTS keys are region codes without a
+//     vendor prefix, so they can't be derived from there.
+//   - Continents: derived from ORIGIN_CONTINENTS (same catalog the live columns
+//     map through via originContinent), kept in ORIGIN_CONTINENT_ORDER.
+const FROM_VENDOR_FALLBACK = ['aws', 'gcp', 'azure']
+const FROM_CONTINENT_FALLBACK = ORIGIN_CONTINENT_ORDER.filter((c) => Object.values(ORIGIN_CONTINENTS).includes(c))
 
 interface HealthProps {
   providers: CloudProvider[]
@@ -857,13 +871,21 @@ export default function Health(props: HealthProps): JSX.Element {
       const v = originVendor(col)
       if (v) set.add(v)
     }
-    return ['aws', 'gcp', 'azure', 'vercel'].filter((v) => set.has(v))
+    const live = ['aws', 'gcp', 'azure', 'vercel'].filter((v) => set.has(v))
+    // Before the snapshot loads, `columns` is empty and these pills would be
+    // absent, then appear after the client fetch — pushing the matrix down
+    // (CLS). Render the deployed fleet's vendors up front so the filter box
+    // holds its height from first paint. Kept in sync with the live set below;
+    // if the snapshot later omits one it simply deactivates rather than removing
+    // the pill. (Memory-safe: ~3 static buttons, no matrix data.)
+    return live.length ? live : FROM_VENDOR_FALLBACK
   }, [columns])
 
   const fromContinents = useMemo(() => {
     const set = new Set<string>()
     for (const col of columns) set.add(originContinent(col))
-    return ORIGIN_CONTINENT_ORDER.filter((c) => set.has(c))
+    const live = ORIGIN_CONTINENT_ORDER.filter((c) => set.has(c))
+    return live.length ? live : FROM_CONTINENT_FALLBACK
   }, [columns])
 
   // Apply From-column filters (null = show all). Row filters are separate.
@@ -1015,7 +1037,7 @@ export default function Health(props: HealthProps): JSX.Element {
             <h2 className="matrix-title">Cloud Region Latency Matrix</h2>
             <p className="text-sm text-[color:var(--text-secondary)]">
               Rows = target cloud regions. Columns = probe origins
-              {columns.length ? ` (${columns.length})` : ''}. Fastest successful HTTP round-trip after warmup — not ICMP ping.
+              {` (${columns.length || '\u2007\u2007'})`}. Fastest successful HTTP round-trip after warmup — not ICMP ping.
             </p>
             <p className="text-xs text-[color:var(--text-muted)]">
               {snapshot
