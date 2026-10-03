@@ -11,7 +11,11 @@ name: Close stale monitor issues
 
 on:
   schedule:
-    - cron: '17 3 * * *' # daily at 03:17 UTC
+    # Hourly. The stale/close thresholds are measured in days, but actions/stale
+    # only acts when the job runs, so an hourly cron keeps the actual close time
+    # within ~1h of the intended 3 days (a once-daily run could add up to ~2
+    # extra days of rounding). Cheap on a public repo (free Actions minutes).
+    - cron: '17 * * * *'
   workflow_dispatch:
 
 permissions:
