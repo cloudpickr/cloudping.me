@@ -619,7 +619,13 @@ export default function CloudPing(props: CloudPingProps): JSX.Element {
               </div>
               <div
                 className="latency-list"
-                style={isLocationInitialized && sortedRegions.length > 0 ? { ['--rows' as string]: sortedRegions.length } : undefined}
+                /* Reserve the list height from the first paint. `--rows` drives the
+                   container height (rows × --row-h); if it's only set after
+                   client-geo init, the list jumps from min-height to its full
+                   height and shoves the footer down (CLS). sortedRegions is
+                   computed even before init (from the initial country set), so
+                   use it unconditionally. */
+                style={sortedRegions.length > 0 ? { ['--rows' as string]: sortedRegions.length } : undefined}
               >
                 {!isLocationInitialized ? null : sortedRegions.length === 0 ? (
                   <div className="text-center py-12 text-[color:var(--text-muted)]">
