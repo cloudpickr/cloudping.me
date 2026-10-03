@@ -100,7 +100,7 @@ const server = createServer((req, res) => {
       // eslint-disable-next-line no-console
       console.error(JSON.stringify({ event: 'probe-round-failed', runId, elapsedMs: Date.now() - startedAt, causeCode: cause?.code }))
       res.writeHead(500, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-      res.end(JSON.stringify({ error: 'probe failed', detail: String(err) }))
+      res.end(JSON.stringify({ error: 'probe failed' }))
     } finally {
       if (activeRun?.id === runId) activeRun = null
     }
