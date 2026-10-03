@@ -16,8 +16,8 @@ function json(statusCode: number, body: unknown, extra?: Record<string, string>)
 
 export async function handler(event: FunctionUrlEvent) {
   const method = event.requestContext?.http?.method || 'GET'
-  if (method !== 'POST' && method !== 'GET') {
-    return json(405, { error: 'method not allowed' }, { allow: 'GET, POST' })
+  if (method !== 'POST') {
+    return json(405, { error: 'method not allowed' }, { Allow: 'POST' })
   }
   const headers = event.headers || {}
   const auth = headers.authorization || headers.Authorization
