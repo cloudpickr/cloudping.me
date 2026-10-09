@@ -1,0 +1,49 @@
+version: 2
+
+# Dependabot keeps dependencies patched across all three ecosystems in this repo.
+# Security updates are always raised regardless of the schedule below.
+#
+# Patch and minor bumps are grouped into a single weekly PR per ecosystem (less
+# noise, and the dependabot-auto-merge workflow fast-tracks them once CI is
+# green). MAJOR bumps are deliberately NOT grouped and NOT auto-merged — they
+# can carry breaking changes (e.g. the Next 14 -> 16 upgrade) and must be
+# reviewed by a human.
+
+updates:
+  # npm (package.json at repo root)
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch
+    # Major updates fall outside the group above, so they open as individual
+    # PRs that the auto-merge workflow leaves for manual review.
+
+  # Go modules (CLI)
+  - package-ecosystem: gomod
+    directory: /cli
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      gomod-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions used by the workflows
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch
