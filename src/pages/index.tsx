@@ -112,7 +112,7 @@ function GeoSection({
           <button type="button" className="flex min-w-0 items-center gap-2 text-left" aria-expanded={isOpen} onClick={() => setManualOpen(!isOpen)}>
             <span className="truncate">{geo}</span>
             <svg
-              className={`w-3 h-3 flex-shrink-0 text-[color:var(--text-muted)] transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}
+              className={`w-3 h-3 shrink-0 text-[color:var(--text-muted)] transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -190,13 +190,13 @@ const LatencyCard = memo(function LatencyCard({
       <div className="latency-card-inner">
         <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
           <div
-            className={`flex-shrink-0 w-6 sm:w-9 text-center font-mono ${
+            className={`shrink-0 w-6 sm:w-9 text-center font-mono ${
               isTop3 ? `text-lg sm:text-xl leading-none ${RANK_CSS[rank! - 1]}` : 'text-xs text-[color:var(--text-muted)]'
             }`}
           >
             {isTop3 ? RANK_MEDALS[rank! - 1] : rank}
           </div>
-          <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
+          <div className="shrink-0 w-5 h-5 flex items-center justify-center">
             <CloudProviderLogo
               width={20}
               providerKey={data.provider.key}
@@ -208,7 +208,7 @@ const LatencyCard = memo(function LatencyCard({
             {/* Top line: region code (+ provider on sm) */}
             <div className="flex items-center gap-2 min-w-0">
               <code className="text-sm font-mono font-medium truncate">{data.region.key}</code>
-              <span className="hidden sm:inline text-xs flex-shrink-0">{data.provider.display_name}</span>
+              <span className="hidden sm:inline text-xs shrink-0">{data.provider.display_name}</span>
             </div>
             {/* Bottom line: flag + location */}
             <div className="flex items-center gap-1.5 text-xs">
@@ -221,11 +221,11 @@ const LatencyCard = memo(function LatencyCard({
             center vertically in the full row height instead of being pinned to
             the region-code line (which left empty space below the values). */}
         {isUnreachable ? (
-          <span className="flex sm:hidden text-xs text-red-400 flex-shrink-0 items-center" title={`Failed ${data.failureCount} times`}>
+          <span className="flex sm:hidden text-xs text-red-400 shrink-0 items-center" title={`Failed ${data.failureCount} times`}>
             ⊘ Unreachable
           </span>
         ) : p50 ? (
-          <div className="flex sm:hidden items-center gap-1.5 flex-shrink-0">
+          <div className="flex sm:hidden items-center gap-1.5 shrink-0">
             <div className="flex flex-col items-center gap-0.5">
               <span className={`latency-badge ${getBadgeClass(p50)}`}>{p50}ms</span>
               <span className="text-[10px] text-[color:var(--text-muted)] font-medium leading-none">P50</span>
@@ -236,15 +236,15 @@ const LatencyCard = memo(function LatencyCard({
             </div>
           </div>
         ) : (
-          <div className="flex sm:hidden skeleton w-[86px] h-[34px] flex-shrink-0" />
+          <div className="flex sm:hidden skeleton w-[86px] h-[34px] shrink-0" />
         )}
         {/* Desktop badges with P50/P80/P95 labels */}
         {isUnreachable ? (
-          <span className="hidden sm:flex text-xs text-red-400 flex-shrink-0 items-center gap-1" title={`Failed ${data.failureCount} times`}>
+          <span className="hidden sm:flex text-xs text-red-400 shrink-0 items-center gap-1" title={`Failed ${data.failureCount} times`}>
             ⊘ Unreachable
           </span>
         ) : p50 ? (
-          <div className="hidden sm:flex items-center gap-3 flex-shrink-0">
+          <div className="hidden sm:flex items-center gap-3 shrink-0">
             <div className="flex items-center gap-1">
               <span className="text-[10px] text-[color:var(--text-muted)] font-medium">P50</span>
               <span className={`latency-badge ${getBadgeClass(p50)}`}>{p50}ms</span>
@@ -539,7 +539,7 @@ export default function CloudPing(props: CloudPingProps): JSX.Element {
                 <span className="ml-auto text-xs text-[color:var(--text-muted)] truncate max-w-[140px]">{selectedGeoLabel}</span>
               </button>
             </div>
-            <aside className={`w-full lg:w-60 flex-shrink-0 ${isFilterOpen ? 'block' : 'hidden lg:block'}`}>
+            <aside className={`w-full lg:w-60 shrink-0 ${isFilterOpen ? 'block' : 'hidden lg:block'}`}>
               <div className="rounded-xl border border-[color:var(--border)] p-4 sticky top-4">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-sm font-medium text-[color:var(--text-secondary)]">Locations</h2>

@@ -1060,7 +1060,7 @@ export default function Health(props: HealthProps): JSX.Element {
                     key={`fv-${v}`}
                     type="button"
                     onClick={() => toggleFromVendor(v)}
-                    className={`provider-pill flex-shrink-0 ${on ? 'active' : ''}`}
+                    className={`provider-pill shrink-0 ${on ? 'active' : ''}`}
                     title={`${v.toUpperCase()} origins`}
                   >
                     {v !== 'vercel' ? <CloudProviderLogo width={14} providerKey={v} providerName={v.toUpperCase()} /> : null}
@@ -1135,7 +1135,7 @@ export default function Health(props: HealthProps): JSX.Element {
                           key={provider.key}
                           type="button"
                           onClick={() => toggleProvider(provider.key)}
-                          className={`provider-pill flex-shrink-0 ${isActive ? 'active' : ''}`}
+                          className={`provider-pill shrink-0 ${isActive ? 'active' : ''}`}
                           title={provider.display_name}
                         >
                           <CloudProviderLogo width={16} providerKey={provider.key} providerName={provider.display_name} />

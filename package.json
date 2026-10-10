@@ -22,19 +22,18 @@
     "@vercel/speed-insights": "^1.0.12"
   },
   "devDependencies": {
-    "@tailwindcss/forms": "0.5.9",
+    "@tailwindcss/forms": "0.5.11",
+    "@tailwindcss/postcss": "4.3.3",
     "@types/node": "22.15.3",
     "@types/react": "18.3.20",
     "@typescript-eslint/eslint-plugin": "8.32.0",
     "@typescript-eslint/parser": "8.32.0",
-    "autoprefixer": "10.4.21",
     "eslint": "8.57.1",
     "eslint-config-prettier": "10.1.5",
     "eslint-plugin-jsx-a11y": "6.10.2",
     "eslint-plugin-prettier": "5.2.6",
     "eslint-plugin-react": "7.37.5",
     "eslint-plugin-react-hooks": "5.2.0",
-    "postcss-import": "16.1.0",
     "prettier": "3.5.3",
     "tailwindcss": "4.3.3",
     "typescript": "5.8.3"
