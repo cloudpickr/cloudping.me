@@ -1,6 +1,5 @@
-@import "tailwindcss/base";
-@import "tailwindcss/components";
-@import "tailwindcss/utilities";
+@import "tailwindcss";
+@config "../../tailwind.config.js";
 
 /* Theme variables */
 :root {
@@ -98,7 +97,7 @@ h5 { @apply text-sm font-medium; color: var(--text-secondary); }
 h6 { @apply text-xs font-medium; color: var(--text-muted); letter-spacing: 0.04em; }
 
 .form-checkbox {
-  @apply rounded text-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500;
+  @apply rounded-sm text-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500;
   border-color: var(--checkbox-border);
   background-color: var(--checkbox-bg);
 }
@@ -389,7 +388,7 @@ code,
 .matrix-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .matrix-legend-label { font-size: 11px; color: var(--text-muted); }
 .matrix-swatch {
-  @apply text-[11px] px-2 py-0.5 rounded-sm font-medium;
+  @apply text-[11px] px-2 py-0.5 rounded-xs font-medium;
   border: 1px solid transparent;
 }
 /* The swatches are buttons: clicking one focuses that band in the matrix. */
