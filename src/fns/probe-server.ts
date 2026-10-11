@@ -360,6 +360,91 @@ async function diagnoseBlackhole(url: string): Promise<BlackholeStageDiag | null
   }
 }
 
+// --- Generic reachability-stage diagnostic (diagnostic only) ----------------
+// Casablanca investigation (PR follow-up, 4-AI cross-review): 24h history showed
+// the three ASIAN GCP origins (Tokyo/Seoul/Mumbai) fail OCI af-casablanca-1
+// ~43-57% of rounds while the SAME origins reach a FARTHER OCI region
+// (sa-valparaiso-1, up to 420ms) 100% of the time, and every non-Asian origin
+// reaches Casablanca fine. Successful samples top out at ~880ms (nowhere near the
+// 3s abort), so this is not a slow path brushing the timeout — it is a BINARY,
+// intermittent connection failure on the Asia-GCP→Casablanca route specifically.
+//
+// diagnoseBlackhole() already separates DNS vs raw-SYN vs TLS, but it is wired to
+// the China mainland path: it dials STATIC mainland IP literals (irrelevant to
+// Casablanca) and only runs on cnBlackhole rounds. This generic variant diagnoses
+// the SAME stages for ANY failed target by dialing the target's OWN host (never a
+// China literal): resolve DNS, raw SYN to the resolved IP, then a bounded TLS
+// handshake with the real SNI. It turns the Casablanca `timeout` from an inference
+// into an observation (DNS stall vs network blackhole vs TLS filtering) so the
+// eventual mitigation (option A retry, static egress IP, etc.) is chosen on
+// evidence. Observation-only: it dials a few sockets, never changes a measured ms,
+// is hard-bounded, and is wrapped so it can neither fail nor slow the round. It is
+// gated per-round to ONE failed non-China target (see runProbe) so steady-state
+// cost is a few sockets on rounds that already have a stuck cell.
+type ReachabilityStageDiag = {
+  provider: string
+  region: string
+  host: string
+  // DNS resolution of the real target host (stage 1)
+  dnsMs: number | null
+  dnsOk: boolean
+  dnsError: string | null
+  resolvedIp: string | null
+  // raw SYN to the DNS-resolved IP (stage 2); a network blackhole shows here as a
+  // bare SYN timeout. Skipped (ok:false, error:'skipped-no-ip') if DNS failed.
+  synMs: number | null
+  synOk: boolean
+  synError: string | null
+  // bounded TLS handshake with the real SNI over the resolved IP (stage 3);
+  // SNI/TLS filtering shows here as a reset/hang after a clean SYN.
+  tlsMs: number | null
+  tlsOk: boolean
+  tlsError: string | null
+}
+
+async function diagnoseReachability(provider: string, region: string, url: string): Promise<ReachabilityStageDiag | null> {
+  let host: string
+  let port: number
+  try {
+    const u = new URL(url)
+    host = u.hostname
+    port = u.port ? Number(u.port) : u.protocol === 'https:' ? 443 : 80
+  } catch {
+    return null
+  }
+  // Stage 1: resolve DNS for the real host (time-bounded). A hang here means the
+  // round's `timeout` was a DNS stall rather than a network blackhole.
+  const dns = await timedDnsLookup(host, 3000)
+
+  // Stage 2: raw SYN to the DNS-resolved IP (no HTTP, no TLS) — isolates the
+  // network layer. If this times out while DNS succeeded, the egress path to the
+  // target is being dropped (blackhole / transit loss / source-prefix filter).
+  let syn: StageResult = { ms: null, ok: false, error: 'skipped-no-ip' }
+  if (dns.ip) syn = await timedTcpConnect(dns.ip, port, 3000)
+
+  // Stage 3: bounded TLS handshake with the real SNI over the resolved IP, only
+  // meaningful if the SYN connected. A reset/hang here (after a clean SYN) points
+  // at SNI/TLS filtering rather than a pure network blackhole.
+  let tls: StageResult = { ms: null, ok: false, error: 'skipped-no-syn' }
+  if (syn.ok && dns.ip) tls = await timedTlsHandshake(dns.ip, port, host, 3000)
+
+  return {
+    provider,
+    region,
+    host,
+    dnsMs: Math.round(dns.ms),
+    dnsOk: dns.ip !== null,
+    dnsError: dns.error,
+    resolvedIp: dns.ip,
+    synMs: syn.ms === null ? null : Math.round(syn.ms),
+    synOk: syn.ok,
+    synError: syn.error,
+    tlsMs: tls.ms === null ? null : Math.round(tls.ms),
+    tlsOk: tls.ok,
+    tlsError: tls.error,
+  }
+}
+
 export type { ProbeResult, ProbeSnapshot } from './probe-snapshot'
 
 const MAX_BODY_BYTES = 64 * 1024
@@ -966,6 +1051,46 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
       }
     }
 
+    // --- Generic target-reachability stage diagnostic (observation only) -----
+    // Casablanca investigation: a specific origin→target route (Asia-GCP→OCI
+    // Casablanca) fails ~half of rounds as a BINARY connection failure, not a
+    // slow path (see diagnoseReachability's banner). The cnBlackhole stage above
+    // only covers mainland-China targets; this runs the SAME DNS/SYN/TLS split
+    // for ONE non-China failed target per round so the failing LAYER is observed
+    // in production logs instead of inferred. Gated hard to keep it cheap:
+    //   • only when the round actually has a failed, non-China target
+    //   • skip targets already covered by the China path (don't double-diagnose)
+    //   • exactly ONE target per round (first in catalog order => stable, so the
+    //     same stuck cell is diagnosed each round and the log is comparable)
+    //   • wrapped so it can neither throw nor meaningfully slow the round
+    // This is per-TARGET (not per-geo): a small geo with 1-2 targets won't create
+    // a false "whole region down" signal, since we trigger on an individual
+    // failed cell, not on a geo-wide all-fail. Cross-origin corroboration isn't
+    // available inside a single origin's round, so the merge/analysis side pairs
+    // these logs across origins; the per-round job only records what IT observed.
+    // `results` is in catalog order (same index space as `jobs`), so we scan by
+    // index and recover the ping_url from the matching job in one pass — no
+    // per-result jobs.find() (which would be O(n²) across ~343 cells).
+    let targetUnreachableStage: ReachabilityStageDiag | null = null
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i]
+      if (r.ok) continue
+      const job = jobs[i]
+      // Index alignment is normally exact, but guard against any drift so we
+      // never diagnose the wrong host; fall back to a keyed lookup if needed.
+      const jobForCell =
+        job && job.provider === r.provider && job.region.key === r.region ? job : jobs.find((j) => j.provider === r.provider && j.region.key === r.region)
+      const url = jobForCell?.region.ping_url
+      if (!url) continue
+      if (isChinaTarget(r.country, url)) continue // mainland path handled by blackholeStage
+      try {
+        targetUnreachableStage = await diagnoseReachability(r.provider, r.region, url)
+      } catch {
+        targetUnreachableStage = null
+      }
+      break // one target per round (cost cap)
+    }
+
     // The egress-IP lookup was fired at round start; it resolves to a validated
     // IPv4 string or null (never rejects). Awaiting here adds no latency in
     // practice — it has had the entire pool duration to complete. Sample again
@@ -999,6 +1124,7 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
         chinaMainland: { attempted: mainlandResults.length, ok: mainlandOk },
         hongKong: { attempted: hkResults.length, ok: hkOk },
         blackholeStage,
+        targetUnreachableStage,
         firstFailedIndex,
         lastFailedIndex,
         longestFailureBlock,
