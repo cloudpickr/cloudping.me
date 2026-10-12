@@ -354,8 +354,40 @@ code,
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
+}
+
+/* Forced colors (Windows High Contrast) + non-color status cues.
+   In forced-colors mode the browser strips our background colors, so the
+   fast/mid/slow/fail bands — which are encoded ONLY by background — collapse
+   into one indistinguishable block. Pair every color band with a glyph in a
+   ::before so the state survives without color, and keep cell borders visible
+   so the grid structure holds.
+
+   The glyph is DECORATIVE: every cell already carries a full textual state in
+   its aria-label (e.g. "42ms latest min from ..."), so the ::before must not be
+   read by a screen reader — otherwise a high-contrast + SR user hears "circle"
+   hundreds of times across the matrix. CSS `content: "X" / ""` sets an empty
+   alt text, muting the glyph for assistive tech while keeping it visible.
+
+   Shape ramp encodes "lower = faster = better": a FULL dot (fast) → half dot
+   (mid) → empty dot (slow), i.e. fuller = better. This reads monotonically
+   without relying on an up/down arrow (which flips meaning depending on whether
+   "up" means higher latency or better rank). */
+@media (forced-colors: active) {
+  .matrix-table th,
+  .matrix-table td {
+    border-color: CanvasText;
+  }
+  .matrix-cell.fast::before { content: '\25CF\00a0' / ''; }
+  .matrix-cell.mid::before { content: '\25D0\00a0' / ''; }
+  .matrix-cell.slow::before { content: '\25CB\00a0' / ''; }
+  /* The focus-band dimming is a color effect that forced-colors neutralizes;
+     drop the opacity so a focused scan still shows every cell's text. */
+  .matrix-table.has-focus .matrix-cell { opacity: 1 !important; }
 }
 
 /* Health matrix (cloudping.co-style To \ From heatmap) */
