@@ -359,19 +359,31 @@ jobs:
               if not isinstance(col, dict) or col.get("stale"):
                   continue
               for item in col.get("results") or []:
-                  if not item.get("ok") or item.get("ms") is None:
-                      continue
                   key = f"{origin}\t{item.get('provider')}\t{item.get('region')}"
-                  history.setdefault(key, []).append([now_ts, int(item["ms"])])
+                  if item.get("ok") and item.get("ms") is not None:
+                      history.setdefault(key, []).append([now_ts, int(item["ms"])])
+                  else:
+                      # Record the FAILED attempt as a sentinel (ms = -1) so the
+                      # 24h window carries a true denominator (attempts), not just
+                      # successes — a cell that fails ~half its rounds otherwise
+                      # looks identical to a healthy one. Every history consumer
+                      # (build-origin-history.mjs validPoint, and the ms>=0 filter
+                      # in the ms24h/n24h computation below) drops ms<0, so this is
+                      # invisible to charts and percentiles. Not surfaced in the
+                      # UI yet — this only starts accumulating the data.
+                      history.setdefault(key, []).append([now_ts, -1])
 
-          # Calculate ms24h (P50) and n24h for each result
+          # Calculate ms24h (P50) and n24h for each result. Only successful
+          # samples (ms >= 0) feed the percentile and the success count; the
+          # failure sentinels added above are excluded here but remain in
+          # history.json for a future success-rate computation.
           for origin, col in froms.items():
               if not isinstance(col, dict):
                   continue
               for item in col.get("results") or []:
                   key = f"{origin}\t{item.get('provider')}\t{item.get('region')}"
                   samples = history.get(key) or []
-                  vals = [s[1] for s in samples]
+                  vals = [s[1] for s in samples if s[1] >= 0]
                   item["ms24h"] = p50(vals) if vals else None
                   item["n24h"] = len(vals)
 
