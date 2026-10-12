@@ -84,10 +84,11 @@ async function getJson(url) {
 
 // Build per-origin baseline: the set of (origin, provider, region) that succeeded
 // in >= BASELINE_FRAC of that origin's recent rounds. history keys are
-// `origin\tprovider\tregion` -> [[ts, ms], ...] of SUCCESSES only. We derive each
-// origin's recent-round timestamps from the union of its cells' success times,
-// then a target is eligible if its success timestamps cover >= BASELINE_FRAC of
-// that union (with a minimum round count).
+// `origin\tprovider\tregion` -> [[ts, ms], ...]; successful rounds are [ts, ms]
+// and failed attempts are [ts, -1] sentinels (see probe.yml). We take SUCCESSES
+// only (ms >= 0) here: derive each origin's recent-round timestamps from the
+// union of its cells' success times, then a target is eligible if its success
+// timestamps cover >= BASELINE_FRAC of that union (with a minimum round count).
 function buildBaseline(history) {
   const byOrigin = new Map() // origin -> { rounds:Set<ts>, cells: Map<targetKey, Set<ts>> }
   for (const [key, samples] of Object.entries(history)) {
@@ -95,7 +96,14 @@ function buildBaseline(history) {
     if (parts.length !== 3) continue
     const [origin, provider, region] = parts
     if (!fleetOf(origin)) continue
-    const valid = Array.isArray(samples) ? samples.filter((s) => Array.isArray(s) && s.length === 2 && typeof s[0] === 'number') : []
+    // SUCCESSES only. history now also stores failed attempts as [ts, -1]
+    // sentinels (see probe.yml); a failure timestamp must not seed the success
+    // baseline, or a chronically-dead target (attempted every round, succeeding
+    // never) would clear BASELINE_FRAC on attempts alone and become a false
+    // fleet-asymmetry candidate.
+    const valid = Array.isArray(samples)
+      ? samples.filter((s) => Array.isArray(s) && s.length === 2 && typeof s[0] === 'number' && Number.isFinite(s[1]) && s[1] >= 0)
+      : []
     if (valid.length === 0) continue
     if (!byOrigin.has(origin)) byOrigin.set(origin, { rounds: new Set(), cells: new Map() })
     const rec = byOrigin.get(origin)
