@@ -10,8 +10,10 @@
 // tracking issue for a human to diagnose. It never edits data or config.
 //
 // DATA SOURCE: the public status branch history.json (no AWS creds needed).
-// It stores only SUCCESSFUL samples per cell keyed origin\tprovider\tregion; a
-// healthy cell accrues ~48 samples over the 7-day window (one per 30-min round).
+// It stores per cell (keyed origin\tprovider\tregion) a 24h window of samples:
+// successful rounds as [ts, ms] and failed attempts as [ts, -1] sentinels. This
+// census counts SUCCESSFUL samples only (ms >= 0); a healthy cell accrues ~48
+// successes over the 7-day window (one per 30-min round).
 //
 // METHOD: per origin, the typical (modal) sample count is the "expected" number
 // for that origin's window. A cell is "starved" if it has < STARVED_FRACTION of
@@ -80,7 +82,11 @@ function analyze(history) {
     const parts = key.split('\t')
     if (parts.length !== 3) continue
     const [origin, provider, region] = parts
-    const valid = Array.isArray(samples) ? samples.filter((s) => Array.isArray(s) && s.length === 2) : []
+    // Count only SUCCESSFUL samples. history now also stores failed attempts as
+    // [ts, -1] sentinels (see probe.yml); they must not count toward a cell's
+    // sample total, or a cell that fails every round would look as sampled as a
+    // healthy one and never trip the starvation census.
+    const valid = Array.isArray(samples) ? samples.filter((s) => Array.isArray(s) && s.length === 2 && Number.isFinite(s[1]) && s[1] >= 0) : []
     const n = valid.length
     const newest = valid.reduce((m, s) => Math.max(m, s[0]), 0)
     // Skip retired cells entirely — they're neither healthy nor a real problem.
