@@ -983,6 +983,11 @@ export default function Health(props: HealthProps): JSX.Element {
   // also overrides the one-time client-geo continent default (an explicit share
   // link beats geo auto-detect).
   const permalinkRestored = useRef(false)
+  // Whether the user (or an incoming share link) explicitly chose From-continents.
+  // The initial value is seeded from client-geo auto-detect, which must NOT leak
+  // into a shared URL — otherwise sharing a plain visit embeds the sharer's
+  // continent. Only an explicit choice flips this, gating from_cont emission.
+  const fromContinentUserSet = useRef(false)
   useEffect(() => {
     if (permalinkRestored.current) return
     if (!router.isReady || !snapshot) return
@@ -999,9 +1004,15 @@ export default function Health(props: HealthProps): JSX.Element {
     if (parsed.fromVendors !== undefined) setSelectedFromVendors(parsed.fromVendors)
     if (parsed.query !== undefined) setFilterQuery(parsed.query)
     if (parsed.fromContinents) {
+      fromContinentUserSet.current = true
       setMatrixState((prev) => ({ ...prev, selectedFromContinents: parsed.fromContinents ?? null }))
     }
-  }, [router.isReady, router.query, snapshot, props.providers, fromVendors, fromContinents])
+    // Single-shot: the ref guard above makes this run exactly once (after the
+    // router is ready and the first snapshot lands). router.query is read inside
+    // but intentionally NOT a dependency — re-running on every URL change would
+    // re-apply the link over the user's later edits. Keep deps minimal so the
+    // one-shot contract is explicit and no one "fixes" it into a feedback loop.
+  }, [router.isReady, snapshot, props.providers, fromVendors, fromContinents])
 
   // Reflect filter state back into the URL (shallow replace, so no navigation
   // and no history spam). Runs only after the one-time restore so the initial
@@ -1010,33 +1021,47 @@ export default function Health(props: HealthProps): JSX.Element {
   // omitted (null) to keep the URL clean.
   useEffect(() => {
     if (!permalinkRestored.current || !router.isReady) return
-    const allProviders = props.providers.length
-    const toProviders = selectedProviders.length === allProviders ? null : selectedProviders
-    const query = buildShareQuery({
-      metric,
-      focusBands,
-      toProviders,
-      fromVendors: selectedFromVendors,
-      fromContinents: selectedFromContinents,
-      query: filterQuery,
-    })
-    const current = router.query as Record<string, string | string[] | undefined>
-    // Only the keys we own; preserve any unrelated query params that may exist.
-    const ownedKeys = ['metric', 'focus', 'to_csp', 'from_csp', 'from_cont', 'q']
-    const nextQuery: Record<string, string | string[]> = {}
-    for (const [k, v] of Object.entries(current)) {
-      if (!ownedKeys.includes(k) && v !== undefined) nextQuery[k] = v
-    }
-    Object.assign(nextQuery, query)
-    // Skip the replace if nothing we own actually changed (avoids a redundant
-    // history/router churn on unrelated re-renders).
-    const sameOwned = ownedKeys.every((k) => {
-      const a = current[k]
-      const b = nextQuery[k]
-      return (a ?? undefined) === (b ?? undefined)
-    })
-    if (sameOwned) return
-    void router.replace({ pathname: router.pathname, query: nextQuery }, undefined, { shallow: true, scroll: false })
+    // Debounce the URL write-back. Without this, every keystroke in the region
+    // search box (filterQuery) fires its own router.replace; one coalesced
+    // update per 300ms idle keeps the URL a share artifact, not a per-keystroke
+    // churn. Other filters (pills/toggles) are infrequent, so the small delay is
+    // imperceptible for them. The cleanup cancels a pending write if state
+    // changes again first, so only the latest value lands.
+    const timer = setTimeout(() => {
+      const allProviders = props.providers.length
+      const toProviders = selectedProviders.length === allProviders ? null : selectedProviders
+      const query = buildShareQuery({
+        metric,
+        focusBands,
+        toProviders,
+        fromVendors: selectedFromVendors,
+        // Only emit From-continents when the user explicitly chose them. The
+        // initial value is client-geo auto-detect, which must stay out of the URL
+        // so sharing a plain visit doesn't embed the sharer's continent.
+        fromContinents: fromContinentUserSet.current ? selectedFromContinents : null,
+        query: filterQuery,
+      })
+      const current = router.query as Record<string, string | string[] | undefined>
+      // Only the keys we own; preserve any unrelated query params that may exist.
+      const ownedKeys = ['metric', 'focus', 'to_csp', 'from_csp', 'from_cont', 'q']
+      const nextQuery: Record<string, string | string[]> = {}
+      for (const [k, v] of Object.entries(current)) {
+        if (!ownedKeys.includes(k) && v !== undefined) nextQuery[k] = v
+      }
+      Object.assign(nextQuery, query)
+      // Skip the replace if nothing we own actually changed (avoids redundant
+      // router churn). Normalize the current side through the same comma-joined
+      // string shape buildShareQuery produces, so a hand-edited URL with a
+      // repeated param (?focus=fast&focus=mid → array) compares correctly instead
+      // of churning every load. A URL that spells out a default value (e.g.
+      // ?metric=latest) will differ from the omitted-default nextQuery and get a
+      // single canonicalizing replace on load — intended tidy-up, not a loop.
+      const norm = (v: string | string[] | undefined): string | undefined => (v == null ? undefined : Array.isArray(v) ? v.join(',') : v)
+      const sameOwned = ownedKeys.every((k) => norm(current[k]) === norm(nextQuery[k]))
+      if (sameOwned) return
+      void router.replace({ pathname: router.pathname, query: nextQuery }, undefined, { shallow: true, scroll: false })
+    }, 300)
+    return () => clearTimeout(timer)
   }, [metric, focusBands, selectedProviders, selectedFromVendors, selectedFromContinents, filterQuery, router.isReady])
 
   // Apply From-column filters (null = show all). Row filters are separate.
@@ -1150,12 +1175,16 @@ export default function Health(props: HealthProps): JSX.Element {
       const next = base.includes(v) ? base.filter((x) => x !== v) : [...base, v]
       return next.length === fromVendors.length ? null : next
     })
-  const toggleFromContinent = (c: string) =>
+  const toggleFromContinent = (c: string) => {
+    // An explicit continent choice: now it's safe to persist to the URL (the
+    // geo auto-detect default never is).
+    fromContinentUserSet.current = true
     setMatrixState((state) => {
       const base = state.selectedFromContinents ?? fromContinents
       const next = base.includes(c) ? base.filter((x) => x !== c) : [...base, c]
       return { ...state, selectedFromContinents: next.length === fromContinents.length ? null : next }
     })
+  }
   const toggleRegion = (key: string) => setSelectedKeys((v) => (v.includes(key) ? v.filter((x) => x !== key) : [...v, key]))
   const toggleBand = (b: FocusBand) => setFocusBands((v) => (v.includes(b) ? v.filter((x) => x !== b) : [...v, b]))
   const selectCell = useCallback((cell: SelectedCell) => setSelectedCell(cell), [])
