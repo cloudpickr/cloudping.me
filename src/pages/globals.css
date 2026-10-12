@@ -354,8 +354,32 @@ code,
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
+}
+
+/* Forced colors (Windows High Contrast) + non-color status cues.
+   In forced-colors mode the browser strips our background colors, so the
+   fast/mid/slow/fail bands — which are encoded ONLY by background — collapse
+   into one indistinguishable block. Pair every color band with a glyph in a
+   ::before so the state survives without color, and keep cell borders visible
+   so the grid structure holds. The glyph is also a plain-sight redundancy for
+   color-blind users even outside forced-colors. */
+@media (forced-colors: active) {
+  .matrix-table th,
+  .matrix-table td {
+    border-color: CanvasText;
+  }
+  /* Latency band glyphs: ▲ fast, ◆ mid, ▽ slow — a monotonic shape ramp that
+     reads without color. Prepended to the ms value already in the cell. */
+  .matrix-cell.fast::before { content: '\25B2\00a0'; }
+  .matrix-cell.mid::before { content: '\25C6\00a0'; }
+  .matrix-cell.slow::before { content: '\25BD\00a0'; }
+  /* The focus-band dimming is a color effect that forced-colors neutralizes;
+     drop the opacity so a focused scan still shows every cell's text. */
+  .matrix-table.has-focus .matrix-cell { opacity: 1 !important; }
 }
 
 /* Health matrix (cloudping.co-style To \ From heatmap) */
