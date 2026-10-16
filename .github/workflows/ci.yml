@@ -47,6 +47,8 @@ jobs:
         run: |
           npx eslint scripts/check-probe-runtime.cjs
           node scripts/check-probe-runtime.cjs
+          npx eslint scripts/check-cloudrun-cost.cjs
+          node scripts/check-cloudrun-cost.cjs
 
       - name: Build
         run: npx next build

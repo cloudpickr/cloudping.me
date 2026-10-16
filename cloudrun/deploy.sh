@@ -56,7 +56,7 @@ build_image() {
     --source "${build_dir}" \
     --region "${BUILD_REGION}" \
     --no-allow-unauthenticated \
-    --cpu 0.5 --memory 512Mi --timeout 300 \
+    --cpu 0.5 --memory 512Mi --timeout 300 --no-cpu-boost \
     --min-instances 0 --max-instances 1 \
     --set-env-vars "PROBE_SECRET=${PROBE_SECRET},PROBE_ORIGIN_ID=gcp-${BUILD_REGION},PROBE_ORIGIN_LABEL=GCP Cloud Run (${BUILD_REGION})" \
     --quiet
@@ -76,7 +76,7 @@ for region in "$@"; do
     --image "${IMAGE}" \
     --region "${region}" \
     --no-allow-unauthenticated \
-    --cpu 0.5 --memory 512Mi --timeout 300 \
+    --cpu 0.5 --memory 512Mi --timeout 300 --no-cpu-boost \
     --min-instances 0 --max-instances 1 \
     --set-env-vars "PROBE_SECRET=${PROBE_SECRET},PROBE_ORIGIN_ID=gcp-${region},PROBE_ORIGIN_LABEL=GCP Cloud Run (${region})" \
     --quiet

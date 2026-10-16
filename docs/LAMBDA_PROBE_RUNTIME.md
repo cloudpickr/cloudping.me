@@ -1,5 +1,9 @@
 # Lambda probe runtime investigation — 2026-10-16
 
+Follow-up metered-origin diagnostic and GCP billing changes are documented in
+[CLOUD_PROBE_COST.md](CLOUD_PROBE_COST.md). The measurements below describe the
+initial optimization, not the later follow-up.
+
 ## Production diagnosis
 
 Read-only CloudWatch analysis of 75 recent rounds in each of two regions

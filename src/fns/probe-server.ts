@@ -758,6 +758,9 @@ export async function runProbe(concurrency = 24, options: { reachabilityDiagnost
     const providers = getAllProviders()
     const regions = getAllCloudRegions()
     const reachabilityDiagnostics = options.reachabilityDiagnostics ?? true
+    // Egress-IP pairing is investigation telemetry, not a latency sample.
+    // Avoid two extra HTTP calls (and up to 2s on the tail) on metered origins.
+    const egressDiagnostics = reachabilityDiagnostics || process.env.PROBE_EGRESS_DIAGNOSTICS === '1'
     let skippedDisabled = 0
     const jobs: { provider: string; region: (typeof regions)[string][number] }[] = []
     for (const provider of providers) {
@@ -792,8 +795,9 @@ export async function runProbe(concurrency = 24, options: { reachabilityDiagnost
 
     origin = resolveOrigin()
 
-    // Kick off the egress-IP lookup now so it overlaps the whole measurement
-    // pass (its result is only read when we build the round summary). Fire-and-
+    // When investigation telemetry is enabled, kick off the egress-IP lookup
+    // now so it overlaps the whole measurement pass (its result is only read
+    // when we build the round summary). Fire-and-
     // forget: lookupEgressIp swallows all errors and resolves to null, so this
     // never rejects and never needs its own try/catch. We sample it AGAIN at
     // round end (egressIpEnd) so the summary can self-check IP stability: a
@@ -803,7 +807,7 @@ export async function runProbe(concurrency = 24, options: { reachabilityDiagnost
     // samples disagree (egressIpStable:false) the per-round IP↔blackhole pairing
     // is unreliable for that round and the cross-round correlation must account
     // for it; if they consistently agree, the single value is trustworthy.
-    const egressIpPromise = lookupEgressIp()
+    const egressIpPromise = egressDiagnostics ? lookupEgressIp() : Promise.resolve(null)
 
     // Exclude the self-cell (origin measuring its own region) from the concurrent
     // fan-out entirely and measure it alone after the pool (see the serial pass
@@ -1095,7 +1099,7 @@ export async function runProbe(concurrency = 24, options: { reachabilityDiagnost
       break // one target per round (cost cap)
     }
 
-    // The egress-IP lookup was fired at round start; it resolves to a validated
+    // If enabled, the lookup fired at round start and resolves to a validated
     // IPv4 string or null (never rejects). Awaiting here adds no latency in
     // practice — it has had the entire pool duration to complete. Sample again
     // now (round end) to self-check stability across the round: egressIpStable
@@ -1103,7 +1107,7 @@ export async function runProbe(concurrency = 24, options: { reachabilityDiagnost
     // platform is choosing outbound addresses per-connection/per-time, so a
     // single egressIp cannot be assumed to be the address the mainland requests
     // used — the correlation analysis must treat those rounds with caution.
-    const [egressIp, egressIpEnd] = await Promise.all([egressIpPromise, lookupEgressIp()])
+    const [egressIp, egressIpEnd] = await Promise.all([egressIpPromise, egressDiagnostics ? lookupEgressIp() : Promise.resolve(null)])
     const egressIpStable = egressIp !== null && egressIpEnd !== null ? egressIp === egressIpEnd : null
 
     // Shared topology log for AWS, GCP, Azure, and Vercel origins. Keeping the
@@ -1122,6 +1126,7 @@ export async function runProbe(concurrency = 24, options: { reachabilityDiagnost
         measurementMs,
         diagnosticsMs: Date.now() - started - measurementMs,
         reachabilityDiagnostics,
+        egressDiagnostics,
         skippedDisabled,
         eventLoopDelay: eldStats,
         cpuStarvation,
