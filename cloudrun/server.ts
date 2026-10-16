@@ -37,7 +37,9 @@ const server = createServer((req, res) => {
       // PROBE_CONCURRENCY overrides for operator A/B tests.
       const parsed = Number(process.env.PROBE_CONCURRENCY)
       const concurrency = Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 12
-      const snapshot = await runProbe(concurrency)
+      // Follow-up DNS/TCP/TLS investigations do not change measured results.
+      // Like Lambda, pay for them only during an explicit investigation.
+      const snapshot = await runProbe(concurrency, { reachabilityDiagnostics: process.env.PROBE_REACHABILITY_DIAGNOSTICS === '1' })
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
       res.end(JSON.stringify(snapshot))
     } catch (err) {

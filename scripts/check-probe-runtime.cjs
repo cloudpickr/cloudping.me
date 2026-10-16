@@ -58,7 +58,7 @@ function load(source, data, fetchImpl = fetch) {
     return modules.get(filename)
   }
   const probe = compile(source + '\nexports.pingTarget = pingTarget;', path.resolve('src/fns/probe-server.ts'))
-  return { ...probe, logs, timeouts, data: data || local(path.resolve('src/data/index.ts')) }
+  return { ...probe, logs, timeouts, env, data: data || local(path.resolve('src/data/index.ts')) }
 }
 
 async function checkSamples() {
@@ -101,7 +101,7 @@ async function checkSamples() {
   assert.equal(calls, 6)
 }
 
-async function checkRound() {
+async function checkRound(egressDiagnostics = false) {
   const regions = [
     { key: 'disabled', country: 'US', probe_disabled: true },
     { key: 'far', country: 'US' },
@@ -118,6 +118,7 @@ async function checkRound() {
     await sleep(host === 'far.test' ? 70 : 5)
     return new Response('ok')
   })
+  if (egressDiagnostics) probe.env.PROBE_EGRESS_DIAGNOSTICS = '1'
   const result = await probe.runProbe(12, { reachabilityDiagnostics: false })
   assert.deepEqual(
     Array.from(result.results, (r) => r.region),
@@ -131,6 +132,11 @@ async function checkRound() {
   assert.equal(result.results.filter((r) => !r.ok).length, 1)
   const summary = probe.logs.find((line) => line.kind === 'probe-round-summary')
   assert.equal(summary.skippedDisabled, 1)
+  assert.equal(counts['checkip.amazonaws.com'], egressDiagnostics ? 2 : undefined)
+  assert.equal(summary.egressDiagnostics, egressDiagnostics)
+  assert.equal(summary.egressIp, egressDiagnostics ? '192.0.2.1' : null)
+  assert.equal(summary.egressIpEnd, egressDiagnostics ? '192.0.2.1' : null)
+  assert.equal(summary.egressIpStable, egressDiagnostics ? true : null)
   assert.equal(summary.blackholeStage, null)
   assert.equal(summary.targetUnreachableStage, null)
   assert.ok(summary.measurementMs <= summary.durationMs)
@@ -213,6 +219,7 @@ async function main() {
   } else {
     await checkSamples()
     await checkRound()
+    await checkRound(true)
     console.log('PASS: warmup retry, 4/3 sample gate, timeout budgets, isolated passes, disabled skip, result order, and diagnostics opt-out')
   }
 }
