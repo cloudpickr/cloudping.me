@@ -46,7 +46,7 @@ Deliberately **not** shared:
 
   | Parameter | From You (browser) | Health (server) |
   |---|---|---|
-  | warmup requests | 1 | 2 |
+  | warmup requests | 1 | pool: 1 successful request, retry once on failure; isolated self: 2; near re-measure: 1 |
   | timed samples per round | 1 | 4 |
   | timeout | 8000 ms | 3000 ms (first warmup request 7000 ms) |
   | reported statistic | p50 / p80 / p95 | fastest (min); 24h P50 for the 24h view |
@@ -61,6 +61,29 @@ Deliberately **not** shared:
   warm once with a generous budget, after which all timed samples still use the
   tight 3000 ms timeout — so reported latencies stay accurate (a real warm RTT,
   not the cold-connect time).
+
+  Pool jobs stop warming after the first completed and drained response. Four
+  timed attempts and the minimum of three plausible successes remain unchanged;
+  the self-cell and serial near-cell passes retain their full warmup sequences.
+  A failed first warmup still gets a second attempt, so an unreachable target
+  retains the 7000 + 3000 ms budget. Reducing the cold-connect ceiling would
+  reintroduce the observed Valparaíso failure; reducing the regular ceiling
+  could reject an observed ~2200 ms reconnect. Neither is reduced here.
+
+  Regions marked `probe_disabled` are omitted from server-side results and
+  failure-rate denominators. They remain available to the browser. Recovery
+  requires checking the endpoint separately and removing the flag; they are no
+  longer automatically rechecked every round. Compare failure rates on the same
+  set of enabled cells when assessing a rollout.
+
+  The Lambda wrapper disables optional post-measurement DNS/SYN/TLS diagnostics
+  by default; set `PROBE_REACHABILITY_DIAGNOSTICS=1` while investigating a route.
+  Set it on the deployed function separately: `lambda/deploy.sh` replaces the
+  environment with the required origin/auth variables, restoring the default.
+  Failure detection, mainland/Hong Kong counters, egress-IP checks, CPU/event-loop
+  telemetry and the snapshot are retained. Other callers keep the previous
+  diagnostic default. Round logs now separate `measurementMs` and
+  `diagnosticsMs` (the latter also includes the final egress-IP check).
 
   A browser page-load budget (fast, cheap on battery/data) and a serverless
   probe round (thorough, bounded GB-seconds) want different values, so these
