@@ -43,5 +43,10 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      - name: Probe runtime regression checks
+        run: |
+          npx eslint scripts/check-probe-runtime.cjs
+          node scripts/check-probe-runtime.cjs
+
       - name: Build
         run: npx next build

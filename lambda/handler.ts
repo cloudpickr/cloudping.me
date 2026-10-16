@@ -37,7 +37,9 @@ export async function handler(event: FunctionUrlEvent) {
   // GCP/Azure keep runProbe's own default.
   const parsed = Number(process.env.PROBE_CONCURRENCY)
   const concurrency = Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 12
-  const snapshot = await runProbe(concurrency)
+  // DNS/SYN/TLS investigations can add up to ~27s AFTER measurement. They do not
+  // affect the snapshot; opt in only while investigating a route failure.
+  const snapshot = await runProbe(concurrency, { reachabilityDiagnostics: process.env.PROBE_REACHABILITY_DIAGNOSTICS === '1' })
   // Cheap diagnostic (no extra requests): share of cells that failed this round.
   // Shorter timeouts + fewer samples can raise failures, making the survivors look
   // artificially fast — this ratio surfaces that so the jitter fix isn't misread.

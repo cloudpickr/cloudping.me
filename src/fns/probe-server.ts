@@ -109,8 +109,8 @@ try {
 // Great-Firewall blackhole of specific Lambda egress IPs. To turn that from a
 // strong inference into a proven 1:1 correlation, we record the round's egress
 // IP so production logs can show whether blackhole rounds map to recurring IPs.
-// One request per round, run in parallel with setup, hard-bounded, and wrapped
-// so it can never fail or slow a round: on any error egressIp is simply null.
+// One request overlaps setup; a second end-of-round check can add up to 2s.
+// Both are bounded and wrapped: on any error the corresponding IP is null.
 async function lookupEgressIp(): Promise<string | null> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 2000)
@@ -164,7 +164,8 @@ function isHongKong(r: ProbeResult): boolean {
 //     (RST/ECONNRESET) or hangs, even though the raw SYN succeeded.
 // Run ONLY when cnBlackhole is already true (never on healthy rounds, so zero
 // steady-state overhead), against ONE mainland host, fully time-bounded and
-// wrapped so it can neither fail nor meaningfully slow the round. Separates the
+// wrapped so failure cannot fail the round. Its sequential stage waits can add
+// up to ~18s when enabled; Lambda opts out by default. Separates the
 // stages so the next fix is chosen on observation, not on another guess.
 //
 // Two review-driven refinements (Codex P1):
@@ -378,7 +379,7 @@ async function diagnoseBlackhole(url: string): Promise<BlackholeStageDiag | null
 // into an observation (DNS stall vs network blackhole vs TLS filtering) so the
 // eventual mitigation (option A retry, static egress IP, etc.) is chosen on
 // evidence. Observation-only: it dials a few sockets, never changes a measured ms,
-// is hard-bounded, and is wrapped so it can neither fail nor slow the round. It is
+// is bounded to ~9s of sequential waits, and cannot fail the round. It is
 // gated per-round to ONE failed non-China target (see runProbe) so steady-state
 // cost is a few sockets on rounds that already have a stuck cell.
 type ReachabilityStageDiag = {
@@ -448,7 +449,7 @@ async function diagnoseReachability(provider: string, region: string, url: strin
 export type { ProbeResult, ProbeSnapshot } from './probe-snapshot'
 
 const MAX_BODY_BYTES = 64 * 1024
-// Keep six requests per target to bound round duration / serverless GB-seconds.
+// One successful warmup, then four samples; retry a failed warmup once.
 // Require three successes even though we report the fastest measured response.
 const SAMPLE_COUNT = 4
 const MIN_SAMPLES = 3
@@ -465,7 +466,7 @@ const DEFAULT_TIMEOUT_MS = 3000
 // samples run ~100ms). 3s absorbs the cold handshake with margin while warm
 // samples are unaffected (min() reports the fast warm read regardless of the
 // abort ceiling). Fail-fast (all-warmups-fail → bail) bounds a genuinely dead
-// China target to 2×3s, and the original 5s→3s trim already removed the long
+// China target to 7s+3s, and the original 5s→3s trim already removed the long
 // stalls the 2s bucket was created to avoid. Cross-reviewed (claude+antigravity),
 // unanimous. Applies uniformly to the main round and both follow-up passes.
 const CHINA_TIMEOUT_MS = 3000
@@ -638,7 +639,7 @@ function errorKind(err: unknown): 'timeout' | 'network' {
 async function pingTarget(
   url: string,
   timeoutMs: number,
-  opts?: { warmupCount?: number; sampleCount?: number }
+  opts?: { warmupCount?: number; sampleCount?: number; stopWarmupOnSuccess?: boolean }
 ): Promise<{ ms: number; samples: number; raw: SelfSample[] } | { error: 'timeout' | 'network' }> {
   // Warmup/sample counts default to the full pool values but can be trimmed for
   // the serial near-cell re-measure pass: that pass runs after the pool, when
@@ -659,6 +660,11 @@ async function pingTarget(
       // give only it the COLD_CONNECT budget, later requests keep timeoutMs.
       await timedGet(url, i === 0 ? Math.max(timeoutMs, COLD_CONNECT_TIMEOUT_MS) : timeoutMs)
       warmupOk++
+      // A completed, drained response has already warmed DNS/TCP/TLS and the
+      // target. Pool jobs need no second throwaway request after that success.
+      // Keep both attempts after a failure, and keep the full warmup sequence
+      // for the isolated self/near passes that protect low-latency accuracy.
+      if (opts?.stopWarmupOnSuccess) break
     } catch (err) {
       warmupError = errorKind(err)
     }
@@ -724,7 +730,7 @@ async function mapPool<T, R>(items: T[], concurrency: number, worker: (item: T) 
   return out
 }
 
-export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
+export async function runProbe(concurrency = 24, options: { reachabilityDiagnostics?: boolean } = {}): Promise<ProbeSnapshot> {
   // Claim (and flip) the warm-state flag as the very first statement, before
   // any other work — setup (data lookups, job construction, origin
   // resolution) as well as measurement. This guarantees two properties:
@@ -751,18 +757,20 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
     const started = Date.now()
     const providers = getAllProviders()
     const regions = getAllCloudRegions()
-    const jobs: { provider: string; region: (typeof regions)[string][number]; recheck: boolean }[] = []
+    const reachabilityDiagnostics = options.reachabilityDiagnostics ?? true
+    let skippedDisabled = 0
+    const jobs: { provider: string; region: (typeof regions)[string][number] }[] = []
     for (const provider of providers) {
       for (const region of regions[provider.key] || []) {
         if (!region.ping_url) continue
-        // probe_disabled regions are officially-operated regions whose public
-        // endpoint normally rate-limits/blocks datacenter traffic. We still
-        // probe them every round (marked recheck:true) so they auto-recover if
-        // the endpoint starts accepting traffic again — a successful round shows
-        // real values, and a failed one stays ok:false like any other failure
-        // (so it keeps its slot in the 7-day history and doesn't reset the
-        // series). Fail-fast in pingTarget keeps a still-dead recheck cheap.
-        jobs.push({ provider: provider.key, region, recheck: !!region.probe_disabled })
+        // This flag explicitly disables server-side probing (browser probing
+        // remains enabled). Omit the cell instead of reporting a skipped check
+        // as a measured failure or spending 7s+3s rediscovering a known block.
+        if (region.probe_disabled) {
+          skippedDisabled++
+          continue
+        }
+        jobs.push({ provider: provider.key, region })
       }
     }
 
@@ -777,7 +785,7 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
         ms: null,
         ok: false,
       }
-      const out = await pingTarget(job.region.ping_url, timeoutMs)
+      const out = await pingTarget(job.region.ping_url, timeoutMs, { stopWarmupOnSuccess: true })
       if ('error' in out) return { ...base, error: out.error }
       return { ...base, ms: out.ms, ok: true, samples: out.samples }
     }
@@ -965,6 +973,7 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
       spinWorstInflation: Number(spinWorstInflation.toFixed(1)),
       spinMaxWallMs: Number(spinMaxWallMs.toFixed(1)),
     }
+    const measurementMs = Date.now() - started
 
     // Observability for the near-cell serial re-measure pass: how many near cells
     // there were, how many we re-measured (normally all of them), how many the
@@ -982,12 +991,6 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
       selfMs: selfMsFinal,
     }
 
-    // Observability for probe_disabled recovery: how many rechecks we attempted
-    // and how many came back alive this round. Lets an operator see when such a
-    // region has recovered (and its flag can be dropped) without scanning cells.
-    const recheckJobs = jobs.filter((j) => j.recheck)
-    const recheckAttempted = recheckJobs.length
-    const recheckRecovered = results.filter((r) => r.ok && recheckJobs.some((j) => j.provider === r.provider && j.region.key === r.region)).length
     const failedTargets: Array<{ index: number; provider: string; region: string; error: string }> = []
     const failureKinds: Record<string, number> = {}
     let failedCount = 0
@@ -1035,10 +1038,10 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
     // mainland host (DNS timing/result + a raw SYN to the resolved IP literal)
     // to observe whether the `timeout` is a network blackhole, a DNS stall, or
     // SNI/TLS filtering — the observation that picks the next fix. Never runs on
-    // healthy rounds, so it adds no steady-state cost; fully wrapped so it can
-    // neither fail nor materially slow the round.
+    // healthy rounds; when explicitly enabled in Lambda it adds bounded waits.
+    // Fully wrapped so a diagnostic failure cannot fail the round.
     let blackholeStage: BlackholeStageDiag | null = null
-    if (cnBlackhole && mainlandResults.length > 0) {
+    if (reachabilityDiagnostics && cnBlackhole && mainlandResults.length > 0) {
       // Map the first mainland result back to its job to recover the ping_url.
       const firstMainland = mainlandResults[0]
       const mlJob = jobs.find((j) => j.provider === firstMainland.provider && j.region.key === firstMainland.region)
@@ -1062,7 +1065,7 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
     //   • skip targets already covered by the China path (don't double-diagnose)
     //   • exactly ONE target per round (first in catalog order => stable, so the
     //     same stuck cell is diagnosed each round and the log is comparable)
-    //   • wrapped so it can neither throw nor meaningfully slow the round
+    //   • wrapped so it cannot throw; bounded stage waits still add wall time
     // This is per-TARGET (not per-geo): a small geo with 1-2 targets won't create
     // a false "whole region down" signal, since we trigger on an individual
     // failed cell, not on a geo-wide all-fail. Cross-origin corroboration isn't
@@ -1073,6 +1076,7 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
     // per-result jobs.find() (which would be O(n²) across ~343 cells).
     let targetUnreachableStage: ReachabilityStageDiag | null = null
     for (let i = 0; i < results.length; i++) {
+      if (!reachabilityDiagnostics) break
       const r = results[i]
       if (r.ok) continue
       const job = jobs[i]
@@ -1115,6 +1119,10 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
         egressIpStable,
         concurrency,
         durationMs: Date.now() - started,
+        measurementMs,
+        diagnosticsMs: Date.now() - started - measurementMs,
+        reachabilityDiagnostics,
+        skippedDisabled,
         eventLoopDelay: eldStats,
         cpuStarvation,
         nearCellRemeasure,
@@ -1131,8 +1139,6 @@ export async function runProbe(concurrency = 24): Promise<ProbeSnapshot> {
         failureKinds,
         failedTargets,
         failedTargetsTruncated: failedCount - failedTargets.length,
-        recheckAttempted,
-        recheckRecovered,
       })
     )
 

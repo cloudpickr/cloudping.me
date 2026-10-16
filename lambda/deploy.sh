@@ -29,7 +29,7 @@ if [ -z "${ROLE_ARN:-}" ]; then
 fi
 RUNTIME="nodejs24.x"
 ARCH="arm64"
-MEM="256"
+MEM="512"
 TIMEOUT="300"
 HANDLER="index.handler"
 
