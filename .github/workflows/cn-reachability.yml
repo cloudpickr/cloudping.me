@@ -115,6 +115,11 @@ jobs:
         if: steps.monitor.outputs.has_problem == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Reopen-cooldown window in days (how long after a close the same
+          # diagnosed+accepted condition stays un-refiled). Override by setting a
+          # repo/org Actions variable CN_REOPEN_COOLDOWN_DAYS; unset -> shell
+          # default 7 below; set to 0 to restore the old always-refile behavior.
+          CN_REOPEN_COOLDOWN_DAYS: ${{ vars.CN_REOPEN_COOLDOWN_DAYS }}
         run: |
           set -euo pipefail
           body="$(python3 - <<'PY'
@@ -154,7 +159,7 @@ jobs:
                 "- T3: a `probe-round-summary` where `blackholeStage.dnsOk` and a raw SYN both succeed yet the round still failed (would mean the cause is NOT a network blackhole).",
                 "- T4: the same `egressIp` seen in both a blackhole and a healthy round (would test the per-IP-block hypothesis).",
                 "",
-                "Diagnose — do not auto-fix. Close this issue once reassessed; it re-opens if the trigger persists."]
+                "Diagnose — do not auto-fix. Close this issue once reassessed; if the trigger persists it re-opens after a cooldown (default 7 days; see CN_REOPEN_COOLDOWN_DAYS)."]
           print("\n".join(L))
           PY
           )"
@@ -166,8 +171,35 @@ jobs:
             gh issue comment "${existing}" --body "${body}"
             echo "Refreshed existing issue #${existing}."
           else
-            gh issue create --title "${title}" --body "${body}" --label cn-reachability 2>/dev/null \
-              || gh issue create --title "${title}" --body "${body}"
+            # Reopen cooldown. This condition is already DIAGNOSED (T3/T4 confirmed
+            # a network blackhole at TCP connect; a per-IP block was refuted) and the
+            # accepted decision is to HOLD and let single-round blanks self-heal. Left
+            # unguarded, closing the tracking issue just makes the next round open a
+            # brand-new one (#118 -> #121 -> ...), which is pure noise for a condition
+            # we've chosen to accept. So: if there is NO open issue but the most recent
+            # same-title issue was CLOSED within COOLDOWN_DAYS, stay silent instead of
+            # re-filing. A genuine escalation still surfaces once the cooldown lapses,
+            # and the git-tracked monitor state keeps measuring in the meantime.
+            COOLDOWN_DAYS="${CN_REOPEN_COOLDOWN_DAYS:-7}"
+            last_closed_at="$(gh issue list --state closed --search "in:title ${title}" \
+              --json title,closedAt --jq "[.[] | select(.title==\"${title}\") ] | sort_by(.closedAt) | last | .closedAt // empty")"
+            suppress=false
+            if [ -n "${last_closed_at}" ]; then
+              closed_ts="$(date -u -d "${last_closed_at}" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "${last_closed_at}" +%s 2>/dev/null || echo "")"
+              if [ -n "${closed_ts}" ]; then
+                age_days=$(( ( $(date -u +%s) - closed_ts ) / 86400 ))
+                if [ "${age_days}" -lt "${COOLDOWN_DAYS}" ]; then
+                  suppress=true
+                  echo "Cooldown active: same issue was closed ${age_days}d ago (< ${COOLDOWN_DAYS}d). Not re-filing."
+                fi
+              fi
+            fi
+            if [ "${suppress}" = "true" ]; then
+              echo "Skipping issue creation (reopen cooldown)."
+            else
+              gh issue create --title "${title}" --body "${body}" --label cn-reachability 2>/dev/null \
+                || gh issue create --title "${title}" --body "${body}"
+            fi
           fi
 
       - name: Open or refresh fleet-reachability issue
