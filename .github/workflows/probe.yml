@@ -1,11 +1,12 @@
 name: Probe
 
 on:
-  # EventBridge in ap-northeast-2 is the real 60-minute clock (workflow_dispatch),
+  # EventBridge in ap-northeast-2 is the real 50-minute clock (workflow_dispatch),
   # sized to stay within free tiers. Fallback cron runs on an offset so it provides
-  # a 60-minute safety net if EventBridge stops.
+  # a ~50-minute safety net if EventBridge stops (two fires/hour at :07 and :57; the
+  # scheduled skip-gate below dedupes against a fresh EventBridge-driven round).
   schedule:
-    - cron: '7 * * * *'
+    - cron: '7,57 * * * *'
   workflow_dispatch:
     inputs:
       force_blob:
@@ -74,7 +75,7 @@ jobs:
           set -euo pipefail
           test -n "${PROBE_SECRET}"
 
-          # If triggered by scheduled cron, skip if a probe was published within the last 55 minutes.
+          # If triggered by scheduled cron, skip if a probe was published within the last 45 minutes.
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             last_age=$(curl -fsS --max-time 10 "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/status/latest.json" 2>/dev/null | python3 -c '
           import sys, json, datetime
@@ -88,8 +89,8 @@ jobs:
           except Exception:
               pass
           ' || echo "")
-            if [ -n "${last_age}" ] && [ "${last_age}" -lt 3300 ]; then
-              echo "A probe was published ${last_age}s ago (< 3300s). Skipping redundant scheduled run."
+            if [ -n "${last_age}" ] && [ "${last_age}" -lt 2700 ]; then
+              echo "A probe was published ${last_age}s ago (< 2700s). Skipping redundant scheduled run."
               echo "skip=true" >> "${GITHUB_OUTPUT}"
               exit 0
             fi
@@ -426,9 +427,9 @@ jobs:
 
       # Mirror latest.json to Vercel Blob (primary read path for /health).
       # git status branch stays as the rollback backup. Uploading only latest.json
-      # (one put/run) on a ~60-minute cadence keeps us within Blob's free
-      # 2,000 advanced-operations/month (60 min => ~720/month). EventBridge/cron
-      # fire every 60 min (free-tier sizing); the cadence gate still skips the
+      # (one put/run) on a ~50-minute cadence keeps us within Blob's free
+      # 2,000 advanced-operations/month (50 min => ~864/month). EventBridge/cron
+      # fire every 50 min (free-tier sizing); the cadence gate still skips the
       # upload if the existing blob is younger than the cadence window (e.g. a
       # manual/fallback re-run).
       - name: Mirror latest.json to Vercel Blob
@@ -436,7 +437,7 @@ jobs:
         env:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
           BLOB_BASE_URL: aejnjhuwc4zeyko2.public.blob.vercel-storage.com
-          BLOB_MIN_INTERVAL_SEC: '3480'
+          BLOB_MIN_INTERVAL_SEC: '2880'
           FORCE_BLOB: ${{ github.event.inputs.force_blob }}
         run: |
           set -euo pipefail
