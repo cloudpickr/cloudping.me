@@ -13,7 +13,7 @@ Real-time browser-based latency tester for **17 cloud providers** — including 
 - 🔍 Filter by provider and geographic location
 - 🌙 Dark / Light theme toggle
 - 🇰🇷 Korean CSPs: NAVER Cloud, Kakao Cloud, KT Cloud, NHN Cloud
-- 📡 Shared [latency matrix](https://www.cloudping.me/health) from a Vercel Function probe (not from your browser)
+- 📡 Shared [latency matrix](https://www.cloudping.me/health) measured from cloud probe origins (AWS, GCP, Azure), not from your browser
 
 ## Cloud Providers
 

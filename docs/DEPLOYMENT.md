@@ -85,7 +85,7 @@ cross-cloud backbone comparisons.
 workflows:
 
 ```
-EventBridge (ap-northeast-2, 30-min) ──dispatch──┐   ┌ cron fallback (7,37 * * * *)
+EventBridge (ap-northeast-2, 50-min) ──dispatch──┐   ┌ cron fallback (7,57 * * * *)
                                                  ▼   ▼
                         probe.yml (pull model, one runner)
           ├── AWS: `aws lambda invoke` (OIDC role) for invoke-only regions
@@ -96,16 +96,16 @@ EventBridge (ap-northeast-2, 30-min) ──dispatch──┐   ┌ cron fallback
                         merge all columns → one latest.json
                                                  │
               ├── push to `status` branch (git backup)
-              └── mirror to Vercel Blob (primary read path, ~28-min cadence gate)
+              └── mirror to Vercel Blob (primary read path, ~48-min cadence gate)
                                                  │
                                       /health reads Blob
 ```
 
 **Pull model, single write.** One runner fans out to all origins in parallel,
 merges, and writes **one** `latest.json` per round. This keeps Vercel Blob writes
-at ~1,440/month (free tier is 2,000) regardless of origin count — the reason we
+at ~864/month (free tier is 2,000) regardless of origin count — the reason we
 did *not* go push-model or Cloudflare R2. Measured round time ≈ 80s (well under
-the 30-min window), so no matrix/sharding needed.
+the 50-min window), so no matrix/sharding needed.
 
 Missing origins are carried forward as `stale` for up to 1 hour, then aged out.
 
@@ -123,13 +123,15 @@ GCP `cloudping-invoker`) so deploy and run privileges don't overlap.
 ## Cost
 
 The deployment is designed around free-tier resources, but usage must be monitored:
-- AWS Lambda 13 regions can approach or exceed the account-wide 400,000 GB-s/month
-  free grant when probe rounds run long; request count remains far below 1 million.
+- AWS Lambda 13 regions can approach the account-wide 400,000 GB-s/month free
+  grant when probe rounds run long; the 50-min cadence (see #126) keeps the
+  projection near that grant rather than well over it. Request count remains far
+  below 1 million.
 - GCP Cloud Run 6 regions currently run close to the 180,000 vCPU-s/month request-based
   free grant; Artifact Registry image storage remains below 0.5 GB and builds run in Actions.
 - Azure F1: free SKU with a 60 CPU-minute/day per-app quota and no production SLA.
 - GitHub Actions: free (public repo).
-- Vercel Blob: ~1,440 writes/month (free tier 2,000).
+- Vercel Blob: ~864 writes/month (free tier 2,000).
 
 ## Manual deploy (fallback)
 

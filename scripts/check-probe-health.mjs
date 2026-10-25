@@ -75,7 +75,7 @@ function analyze(history) {
   // no longer probe — e.g. an old region id left in history after a rename). Such
   // cells never get new samples, so counting them as "starved" is a false alarm;
   // they age out of the 7-day window on their own. Live cells get a sample every
-  // ~30 min, so a few hours of silence means the cell is genuinely gone.
+  // ~50 min, so a few hours of silence means the cell is genuinely gone.
   const RETIRED_AFTER_SEC = 6 * 3600
   const nowSec = Math.floor(Date.now() / 1000)
   for (const [key, samples] of Object.entries(history)) {
