@@ -64,6 +64,13 @@ snapshot workflow, not from a new set of requests inside `runProbe`.
   through per-round server rechecks; remove the flag after a separate recovery
   check. Omitted checks are not recorded as fresh failures. Compare fail rates
   using the same 340 enabled cells, not the old 344-cell denominator.
+  (Update: four Linode regions on retired `speedtest.*.linode.com` hosts —
+  `us-central`/Dallas, `us-west`/Fremont, `ca-central`/Toronto,
+  `ap-southeast`/Sydney — are now also `probe_disabled`, so the server-side
+  denominator is 336 enabled cells. These four DCs have no Object Storage
+  cluster, so there is no `linodeobjects.com` endpoint to repoint them to;
+  remove the flag only if Linode restores HTTPS or ships regional storage. The
+  benchmark numbers in this file predate that change and still reflect 340.)
 - Lambda disables optional DNS/TCP/TLS follow-up investigations by default.
   `PROBE_REACHABILITY_DIAGNOSTICS=1` opts back in. Other callers retain their
   previous diagnostic default. Failure results, China/Hong Kong counters,
