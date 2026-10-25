@@ -74,7 +74,7 @@ latency heatmap (colors: &lt;100 / 100–180 / &gt;180ms).
   headers after 2 warmups (at least 3 successes; not from your browser). A 24h P50
   view is available once enough samples accrue; it is the median of per-run values
   and may include older probe behavior.
-- Snapshots refresh about every 30 minutes.
+- Snapshots refresh about every 50 minutes.
 
 > Operating the probes (multi-cloud deploy, scheduling, secrets, free-tier
 > budgets) is documented separately in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).

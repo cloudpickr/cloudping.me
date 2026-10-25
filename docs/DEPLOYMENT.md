@@ -13,7 +13,7 @@ three clouds that each measure HTTP round-trip latency to every target.
 Two independent concerns, deliberately separated:
 
 1. **Deploy** — get the probe code onto each origin (on `git push`).
-2. **Run** — invoke all origins every ~30 min, merge results, publish to `/health`.
+2. **Run** — invoke all origins every ~50 min, merge results, publish to `/health`.
 
 ## The probe code (one source, three packagings)
 
@@ -79,7 +79,7 @@ three consecutive rounds above 15% failures is the rollback signal.
 Same-city overlaps (e.g. Seoul on AWS+GCP+Azure) are kept intentionally as
 cross-cloud backbone comparisons.
 
-## Run: `probe.yml` (the 30-minute clock, unchanged by deploys)
+## Run: `probe.yml` (the 50-minute clock, unchanged by deploys)
 
 `.github/workflows/probe.yml` is the runtime path, independent of the deploy
 workflows:

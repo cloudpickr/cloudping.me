@@ -12,7 +12,7 @@ they can never be identical.
 | Where it runs | The end user's **browser** | Cloud **probe origins** (AWS Lambda / GCP Cloud Run / Azure App Service / Vercel Function) |
 | Question answered | "How fast is **my** connection to this region?" | "How fast is the path from cloud datacenter X to region Y?" |
 | Code | `src/fns/time.ts` (`ping`) | `src/fns/probe-server.ts` (`runProbe`) |
-| Data flow | Live, in the browser | Probed every ~30 min by GitHub Actions, published to `latest.json`, read via `/api/health-matrix` |
+| Data flow | Live, in the browser | Probed every ~50 min by GitHub Actions, published to `latest.json`, read via `/api/health-matrix` |
 
 The vantage points are physically different network origins. You cannot move a
 user's browser into a datacenter, so **the two pages will never show the same
