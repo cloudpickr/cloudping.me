@@ -1,5 +1,11 @@
 # Lambda probe runtime investigation — 2026-10-16
 
+> **Update (2026-10-24):** This investigation and its GB-s math assume the
+> **30-min** measurement cadence in effect at the time. The cadence has since
+> been changed to **50 min** (see #126), which roughly halves monthly
+> invocations and GB-s versus the figures below. Read the numbers here as the
+> 30-min-cadence baseline; the 50-min projection is tracked in #126.
+
 Follow-up metered-origin diagnostic and GCP billing changes are documented in
 [CLOUD_PROBE_COST.md](CLOUD_PROBE_COST.md). The measurements below describe the
 initial optimization, not the later follow-up.
