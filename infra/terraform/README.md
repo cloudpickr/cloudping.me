@@ -57,7 +57,7 @@ repo-path transfer.
 
 - **AWS (32)**: 13 `cloudping-probe` Lambdas (nodejs24.x), the `cloudping-probe-clock`
   Lambda (kept on nodejs20.x — a separate change owns any runtime bump), the
-  EventBridge `rate(30 minutes)` rule + target + permission, 4 Function URLs,
+  EventBridge `rate(50 minutes)` rule + target + permission, 4 Function URLs,
   3 IAM roles + policies, and the GitHub Actions OIDC provider.
 - **GCP (23)**: 6 Cloud Run probe services, Artifact Registry repo, the Workload
   Identity Federation pool/provider, and the deployer/invoker service accounts + IAM.

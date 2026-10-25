@@ -238,7 +238,7 @@ resource "aws_lambda_function" "clock" {
   architectures = ["arm64"]
   memory_size   = 128
   timeout       = 10
-  description   = "30-minute EventBridge clock: workflow_dispatch Probe"
+  description   = "50-minute EventBridge clock: workflow_dispatch Probe"
   filename      = "${path.module}/dummy.zip"
 
   environment {
@@ -269,7 +269,7 @@ import {
 
 resource "aws_cloudwatch_event_rule" "clock" {
   name                = "cloudping-probe-clock"
-  schedule_expression = "rate(30 minutes)"
+  schedule_expression = "rate(50 minutes)"
   state               = "ENABLED"
 }
 

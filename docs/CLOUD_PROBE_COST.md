@@ -2,6 +2,12 @@
 
 ## Scope
 
+> **Update (2026-10-24):** The measurement cadence has since been changed from
+> 30 min to **50 min** (EventBridge `cloudping-probe-clock` → `rate(50 minutes)`;
+> see #126). The scope below describes an earlier worktree whose premise was an
+> unchanged 30-minute cadence — its GB-sec figures are 30-min-based and should be
+> read in that context.
+
 Keep the 30-minute measurement cadence, enabled target catalog, four pooled
 samples with three-success gating, timeout budgets, isolated self/near passes,
 and AWS 512 MB / GCP 0.5 vCPU + 512 MiB allocations unchanged.

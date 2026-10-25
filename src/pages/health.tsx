@@ -820,14 +820,14 @@ export default function Health(props: HealthProps): JSX.Element {
 
   // Fetch the latest published probe snapshot and swap only the matrix values
   // into state. Shared by the initial mount load, the manual refresh button, and
-  // the 30-minute auto-refresh timer. `isInitial` gates the one-time client-geo
+  // the 50-minute auto-refresh timer. `isInitial` gates the one-time client-geo
   // continent default so a refresh never clobbers the user's continent choice.
   const loadMatrix = useCallback((opts?: { isInitial?: boolean; signal?: AbortSignal }) => {
     const isInitial = opts?.isInitial ?? false
     if (!isInitial) setRefreshing(true)
     // Let the browser/CDN reuse the API's cached response (the route sets
     // s-maxage=60, stale-while-revalidate=300). The board only refreshes about
-    // every 30 min, so a <=60s cache is harmless to freshness but lets repeat
+    // every 50 min, so a <=60s cache is harmless to freshness but lets repeat
     // visits and reloads paint the matrix immediately instead of waiting on a
     // fresh upstream round-trip. (Previously `cache: 'no-store'` forced a cold
     // fetch every load, hurting LCP.)
@@ -879,14 +879,14 @@ export default function Health(props: HealthProps): JSX.Element {
     loadMatrix()
   }, [loadMatrix, refreshing])
 
-  // Auto-refresh: the server probe publishes ~every 30 min, so schedule the next
-  // values reload for 30 min after the CURRENT snapshot's timestamp (+90s buffer
+  // Auto-refresh: the server probe publishes ~every 50 min, so schedule the next
+  // values reload for 50 min after the CURRENT snapshot's timestamp (+90s buffer
   // so we fetch just after the new snapshot lands, not just before). Re-anchors
   // whenever snapshot.at changes. Only fires on a visible tab; if the tab was
   // hidden past the due time, it refreshes on return.
   useEffect(() => {
     if (!snapshot?.at) return
-    const REFRESH_INTERVAL_MS = 30 * 60 * 1000
+    const REFRESH_INTERVAL_MS = 50 * 60 * 1000
     const BUFFER_MS = 90 * 1000
     let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -1221,7 +1221,7 @@ export default function Health(props: HealthProps): JSX.Element {
             </p>
             <p className="text-xs text-[color:var(--text-muted)]">
               {snapshot
-                ? `Last updated ${formatUpdated(snapshot.at)}. Refreshed about every 30 minutes.`
+                ? `Last updated ${formatUpdated(snapshot.at)}. Refreshed about every 50 minutes.`
                 : loadError
                   ? `No probe snapshot yet (${loadError}). Run the Probe GitHub Action to publish the status branch.`
                   : 'Loading latest probe snapshot…'}
