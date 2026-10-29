@@ -104,6 +104,13 @@ h6 { @apply text-xs font-medium; color: var(--text-muted); letter-spacing: 0.04e
 .form-checkbox {
   @apply rounded-sm text-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500;
   border-color: var(--checkbox-border);
+}
+/* Only theme the UNCHECKED box background. This rule is unlayered, so it would
+   otherwise beat @tailwindcss/forms' layered `:checked{background-color:
+   currentColor}` regardless of specificity — pinning the themed bg over the
+   checked fill and hiding the white check glyph. Scoping it to the unchecked/
+   non-indeterminate state yields the themed empty box to forms when checked. */
+.form-checkbox:not(:checked):not(:indeterminate) {
   background-color: var(--checkbox-bg);
 }
 
