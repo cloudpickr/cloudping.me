@@ -1,5 +1,10 @@
 @import "tailwindcss";
 @config "../../tailwind.config.js";
+/* Tailwind v4 does not load the JS config's `plugins` array via @config, so the
+   @tailwindcss/forms plugin (which draws the checkbox/radio check mark via an
+   appearance:none + :checked background-image) must be declared here. Without
+   it, `.form-checkbox` inputs render as empty boxes with no check glyph. */
+@plugin "@tailwindcss/forms";
 
 /* Theme variables */
 :root {
