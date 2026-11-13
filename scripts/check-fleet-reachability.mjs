@@ -4,13 +4,13 @@
 // Hong Kong control), this catches a DIFFERENT class — an entire ORIGIN FLEET
 // (all AWS, or all GCP, or all Azure regions) simultaneously failing to reach
 // ONE target, while the OTHER fleets reach that same target fine. Observed
-// example: at one 30-min round every reporting Azure origin timed out to Vultr
+// example: at one probe round every reporting Azure origin timed out to Vultr
 // Santiago (Chile) while all 13 AWS and 6 GCP origins reached it at 49-353ms;
 // it self-healed the next round. A three-model review (claude/antigravity/codex)
 // concluded: the right, credential-free signal is CROSS-FLEET AGREEMENT — the
 // same target succeeding from the other two fleets is the natural control, so
 // no designated per-continent control target is needed (a flaky control would
-// poison the signal). Do NOT retry-probe (a blip self-heals in 30 min and
+// poison the signal). Do NOT retry-probe (a blip self-heals by the next round and
 // re-probing costs serverless compute); do NOT alert on a single round (that
 // self-heals); only a persistent, confirmed asymmetry is worth a human.
 //
@@ -43,6 +43,7 @@
 // per-cell log. Lives on the dedicated cn-monitor branch alongside cn-monitor.json.
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
 
 const LATEST_URL = process.env.LATEST_URL || 'https://raw.githubusercontent.com/cloudpickr/cloudping.me/status/latest.json'
 const HISTORY_URL = process.env.HISTORY_URL || 'https://raw.githubusercontent.com/cloudpickr/cloudping.me/status/history.json'
@@ -218,26 +219,41 @@ function loadState() {
   }
 }
 
-// Assign the round to a 30-min slot so re-runs on the same published round don't
-// manufacture a confirmation streak.
-const SLOT_MS = 30 * 60 * 1000
-function slotOf(latest) {
-  const at = latest.at || new Date().toISOString()
+// A "slot" is the round's OWN published timestamp (latest.at), so re-runs on the
+// same published round (workflow_run + backup crons) map to the same slot and
+// can't manufacture a confirmation streak. We deliberately do NOT floor to a fixed
+// bucket width: the probe cadence is 50 min (#126), and a 30-min bucket splits
+// rounds 50 min apart into non-adjacent slots about half the time, which resets
+// the 2-round confirmation/recovery gates and silences the monitor.
+const ROUND_INTERVAL_MS = 50 * 60 * 1000 // nominal probe cadence
+// Two rounds are CONSECUTIVE when the gap is within [MIN, MAX]. MAX is 1.5x the
+// cadence (jitter tolerant, but a fully skipped round ~100 min is NOT adjacent);
+// MIN rejects near-duplicate rounds so two rounds a few minutes apart can't
+// confirm an event on their own.
+const MIN_ADJACENT_GAP_MS = 20 * 60 * 1000
+const MAX_ADJACENT_GAP_MS = Math.round(ROUND_INTERVAL_MS * 1.5)
+export function slotOf(latest) {
+  const at = latest.at
   const ms = Date.parse(at)
-  if (Number.isNaN(ms)) return at
-  const slot = Math.floor(ms / SLOT_MS)
-  return new Date(slot * SLOT_MS).toISOString()
+  if (Number.isNaN(ms)) {
+    // No usable round timestamp: fall back to a cadence-wide bucket so same-bucket
+    // re-runs still dedupe.
+    const bucket = Math.floor(Date.now() / ROUND_INTERVAL_MS)
+    return new Date(bucket * ROUND_INTERVAL_MS).toISOString()
+  }
+  return new Date(ms).toISOString()
 }
-// True iff `slot` is exactly one 30-min interval after `prevSlot`. Used so a
-// streak only advances across ADJACENT slots — a skipped/missed round (e.g. slot
-// N then N+2) is NOT treated as consecutive, which would otherwise defeat the
-// two-consecutive-round confirmation and recovery gates (codex review).
-function isAdjacentSlot(prevSlot, slot) {
+// True iff `slot` follows `prevSlot` by one probe round (cadence-aware). Used so
+// a streak only advances across consecutive rounds — a skipped/missed round is
+// NOT treated as consecutive, which would otherwise defeat the two-consecutive-
+// round confirmation and recovery gates (codex review).
+export function isAdjacentSlot(prevSlot, slot) {
   if (!prevSlot) return false
   const a = Date.parse(prevSlot)
   const b = Date.parse(slot)
   if (Number.isNaN(a) || Number.isNaN(b)) return false
-  return b - a === SLOT_MS
+  const gap = b - a
+  return gap >= MIN_ADJACENT_GAP_MS && gap <= MAX_ADJACENT_GAP_MS
 }
 
 async function main() {
@@ -365,7 +381,10 @@ async function main() {
   )
 }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+// Run only when executed directly (not when imported by the tests).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })
+}
