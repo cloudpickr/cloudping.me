@@ -50,5 +50,8 @@ jobs:
           npx eslint scripts/check-cloudrun-cost.cjs
           node scripts/check-cloudrun-cost.cjs
 
+      - name: Monitor logic tests
+        run: node --test scripts/check-fleet-reachability.test.mjs
+
       - name: Build
         run: npx next build
