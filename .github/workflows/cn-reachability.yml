@@ -22,7 +22,7 @@ on:
   # delays or DROPS scheduled cron on public repos under load (observed: the old
   # :12,:42 cron fired only ~once every few hours), which would make the monitor
   # miss the consecutive-round windows its triggers depend on. The Probe workflow
-  # runs reliably every 30 min, so chaining off its completion guarantees the
+  # runs reliably on its fixed cadence, so chaining off its completion guarantees the
   # monitor runs whenever fresh data is published. workflow_run fires even if that
   # Probe run SKIPPED publishing (it still completes) — the monitor reads the
   # public latest.json regardless, so a skipped round is harmless.
@@ -103,7 +103,7 @@ jobs:
           cp "${tmp}/fleet-monitor.json" fleet-monitor.json || { echo "failed to restore fleet state" >&2; exit 1; }
           # Vercel reads git.deploymentEnabled from the vercel.json on the PUSHED
           # branch. This orphan branch has no source, so without this file Vercel
-          # defaults to enabled and fails a preview build on every 30-min push.
+          # defaults to enabled and fails a preview build on every probe-cadence push.
           # Ship a disabling vercel.json here (same trick the status publisher in
           # probe.yml uses) so Vercel never creates a deployment for this branch.
           printf '%s' '{"git":{"deploymentEnabled":false}}' > vercel.json
@@ -126,7 +126,7 @@ jobs:
           import json
           d = json.load(open("/tmp/cn-monitor-result.json"))
           L = ["A China-reachability reopen trigger fired. Background: cloudping's China-mainland",
-               "cells intermittently go all-blank from an AWS origin for a single 30-min round",
+               "cells intermittently go all-blank from an AWS origin for a single probe round",
                "while the Hong Kong controls stay healthy. A three-model review (claude + antigravity",
                "+ codex) localized this to TCP connection establishment on the origin→mainland path",
                "(DNS resolves; a raw SYN to a mainland IP literal times out), with the responsible",
@@ -168,8 +168,18 @@ jobs:
           existing="$(gh issue list --state open --search "in:title ${title}" --json number,title \
             --jq ".[] | select(.title==\"${title}\") | .number" | head -n1)"
           if [ -n "${existing}" ]; then
-            gh issue comment "${existing}" --body "${body}"
-            echo "Refreshed existing issue #${existing}."
+            # Several triggers (workflow_run, hourly backup cron, probe fallback cron)
+            # can evaluate the SAME published round; skip if the latest comment on the
+            # issue already reports this round, so one round yields one comment.
+            round_marker="$(printf '%s' "${body}" | grep -o '(round [^)]*)' | head -n1 || true)"
+            last_comment="$(gh issue view "${existing}" --json comments --jq '.comments[-1].body // ""')"
+            if [ -n "${round_marker}" ] && [ "${round_marker}" != "(round None)" ] \
+              && [[ "${last_comment}" == *"${round_marker}"* ]]; then
+              echo "Latest comment on #${existing} already covers ${round_marker}; not duplicating."
+            else
+              gh issue comment "${existing}" --body "${body}"
+              echo "Refreshed existing issue #${existing}."
+            fi
           else
             # Reopen cooldown. This condition is already DIAGNOSED (T3/T4 confirmed
             # a network blackhole at TCP connect; a per-IP block was refuted) and the
@@ -250,8 +260,18 @@ jobs:
           existing="$(gh issue list --state open --search "in:title ${title}" --json number,title \
             --jq ".[] | select(.title==\"${title}\") | .number" | head -n1)"
           if [ -n "${existing}" ]; then
-            gh issue comment "${existing}" --body "${body}"
-            echo "Refreshed existing issue #${existing}."
+            # Several triggers (workflow_run, hourly backup cron, probe fallback cron)
+            # can evaluate the SAME published round; skip if the latest comment on the
+            # issue already reports this round, so one round yields one comment.
+            round_marker="$(printf '%s' "${body}" | grep -o '(round [^)]*)' | head -n1 || true)"
+            last_comment="$(gh issue view "${existing}" --json comments --jq '.comments[-1].body // ""')"
+            if [ -n "${round_marker}" ] && [ "${round_marker}" != "(round None)" ] \
+              && [[ "${last_comment}" == *"${round_marker}"* ]]; then
+              echo "Latest comment on #${existing} already covers ${round_marker}; not duplicating."
+            else
+              gh issue comment "${existing}" --body "${body}"
+              echo "Refreshed existing issue #${existing}."
+            fi
           else
             gh issue create --title "${title}" --body "${body}" --label fleet-reachability 2>/dev/null \
               || gh issue create --title "${title}" --body "${body}"
