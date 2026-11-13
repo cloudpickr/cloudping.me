@@ -208,14 +208,36 @@ function findCandidates(latest, eligible, frozenPairs) {
   return candidates
 }
 
+// State schema v2: slots are the rounds' own timestamps. v1 state stored 30-min
+// FLOORED bucket boundaries, which are not real round times; comparing a real
+// timestamp against one can look "adjacent" for a re-run of the same round
+// (e.g. the same round re-processed 20-30 min after its bucket boundary) and
+// falsely advance a streak. Migrate by dropping every stored slot: confirmed
+// events stay active (recovery then needs fresh consecutive clear rounds),
+// unconfirmed streaks restart from 1.
+const STATE_VERSION = 2
+export function migrateState(s) {
+  if (!s || typeof s !== 'object') return { version: STATE_VERSION, lastSlot: null, events: {} }
+  if (!s.events) s.events = {}
+  if (s.version !== STATE_VERSION) {
+    s.lastSlot = null
+    for (const ev of Object.values(s.events)) {
+      if (!ev) continue
+      ev.lastSlot = null
+      if (!ev.confirmed) ev.candidateStreak = 0
+      ev.recoveryStreak = 0
+    }
+    s.version = STATE_VERSION
+  }
+  return s
+}
+
 function loadState() {
-  if (!existsSync(STATE_PATH)) return { version: 1, lastSlot: null, events: {} }
+  if (!existsSync(STATE_PATH)) return migrateState(null)
   try {
-    const s = JSON.parse(readFileSync(STATE_PATH, 'utf8'))
-    if (!s.events) s.events = {}
-    return s
+    return migrateState(JSON.parse(readFileSync(STATE_PATH, 'utf8')))
   } catch {
-    return { version: 1, lastSlot: null, events: {} }
+    return migrateState(null)
   }
 }
 
@@ -256,6 +278,55 @@ export function isAdjacentSlot(prevSlot, slot) {
   return gap >= MIN_ADJACENT_GAP_MS && gap <= MAX_ADJACENT_GAP_MS
 }
 
+// Advance event state for one round. Pure w.r.t. I/O (mutates `state`). Only
+// advances on a NEW slot, so repeated same-round runs don't inflate streaks.
+export function advanceState(state, candidates, slot) {
+  const isNewSlot = state.lastSlot !== slot
+  const adjacent = isAdjacentSlot(state.lastSlot, slot)
+  const candKeys = new Set(candidates.map((c) => c.key))
+  const confirmed = []
+  const recovered = []
+  if (isNewSlot) {
+    // bump / open candidates. A streak only advances if THIS round directly
+    // follows the event's previous round (cadence-aware); a gap (missed/skipped
+    // round) resets it to 1.
+    for (const c of candidates) {
+      const prev = state.events[c.key]
+      const contiguous = prev && isAdjacentSlot(prev.lastSlot, slot)
+      const ev = prev || { firstSlot: slot, candidateStreak: 0, recoveryStreak: 0, confirmed: false, last: null }
+      ev.candidateStreak = contiguous ? ev.candidateStreak + 1 : 1
+      if (!contiguous && !ev.confirmed) ev.firstSlot = slot
+      ev.recoveryStreak = 0
+      ev.lastSlot = slot
+      ev.last = { failed: c.failed, observed: c.observed, others: c.others }
+      // CONFIRMED on the 2nd consecutive candidate round.
+      if (ev.candidateStreak >= 2 && !ev.confirmed) {
+        ev.confirmed = true
+        confirmed.push(c.key)
+      }
+      state.events[c.key] = ev
+    }
+    // decay events not seen this round. Recovery also requires CONSECUTIVE clear
+    // rounds; a non-adjacent round is inconclusive (we don't know the missed
+    // round's state), so it RESETS the clear streak (clear, missed, clear must
+    // not recover) and the event stays active rather than being falsely cleared.
+    for (const [key, ev] of Object.entries(state.events)) {
+      if (candKeys.has(key)) continue
+      ev.candidateStreak = 0
+      ev.recoveryStreak = adjacent ? (ev.recoveryStreak || 0) + 1 : 0
+      if (ev.confirmed && adjacent && ev.recoveryStreak >= 2) {
+        recovered.push(key)
+        delete state.events[key]
+      } else if (!ev.confirmed && ev.recoveryStreak >= 2) {
+        // an unconfirmed blip that cleared — drop it quietly
+        delete state.events[key]
+      }
+    }
+    state.lastSlot = slot
+  }
+  return { isNewSlot, adjacent, confirmed, recovered }
+}
+
 async function main() {
   const wantJson = process.argv.includes('--json')
   const persist = process.argv.includes('--persist')
@@ -281,56 +352,8 @@ async function main() {
   }
 
   const candidates = findCandidates(latest, eligible, frozenPairs)
-  const isNewSlot = state.lastSlot !== slot
-  const adjacent = isAdjacentSlot(state.lastSlot, slot)
-  const candKeys = new Set(candidates.map((c) => c.key))
   const candByKey = new Map(candidates.map((c) => [c.key, c]))
-
-  // Advance event state ONLY on a new accepted slot (so repeated same-round runs
-  // don't inflate streaks).
-  const confirmed = []
-  const recovered = []
-  if (isNewSlot) {
-    // bump / open candidates. A streak only advances if THIS slot is exactly one
-    // interval after the event's previous slot; a gap (missed/skipped round)
-    // resets it to 1, so N and N+2 with N+1 missing don't count as consecutive.
-    for (const c of candidates) {
-      const prev = state.events[c.key]
-      const contiguous = prev && isAdjacentSlot(prev.lastSlot, slot)
-      const ev = prev || { firstSlot: slot, candidateStreak: 0, recoveryStreak: 0, confirmed: false, last: null }
-      ev.candidateStreak = contiguous ? ev.candidateStreak + 1 : 1
-      if (!contiguous && !ev.confirmed) ev.firstSlot = slot
-      ev.recoveryStreak = 0
-      ev.lastSlot = slot
-      ev.last = { failed: c.failed, observed: c.observed, others: c.others }
-      // CONFIRMED on the 2nd consecutive candidate slot.
-      if (ev.candidateStreak >= 2 && !ev.confirmed) {
-        ev.confirmed = true
-        confirmed.push(c.key)
-      }
-      state.events[c.key] = ev
-    }
-    // decay events not seen this slot. Recovery also requires CONSECUTIVE clear
-    // slots; a non-adjacent slot is inconclusive (we don't know the missed
-    // round's state), so it does NOT advance recovery for a confirmed event —
-    // the event stays active rather than being falsely cleared.
-    for (const [key, ev] of Object.entries(state.events)) {
-      if (candKeys.has(key)) continue
-      ev.candidateStreak = 0
-      if (adjacent) {
-        ev.recoveryStreak = (ev.recoveryStreak || 0) + 1
-      }
-      // recovered: was confirmed, now 2 consecutive clear slots
-      if (ev.confirmed && adjacent && ev.recoveryStreak >= 2) {
-        recovered.push(key)
-        delete state.events[key]
-      } else if (!ev.confirmed && ev.recoveryStreak >= 2) {
-        // an unconfirmed blip that cleared — drop it quietly
-        delete state.events[key]
-      }
-    }
-    state.lastSlot = slot
-  }
+  const { isNewSlot, confirmed, recovered } = advanceState(state, candidates, slot)
 
   const activeConfirmed = Object.entries(state.events)
     .filter(([, ev]) => ev.confirmed)
