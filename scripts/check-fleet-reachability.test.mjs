@@ -76,7 +76,17 @@ test('clear, missed round, clear does NOT recover', () => {
   const r = advanceState(st, [], T('13:27')) // gap ~100 min: inconclusive
   assert.deepEqual(r.recovered, [])
   assert.ok(st.events['azure|vultr|scl'])
-  assert.equal(st.events['azure|vultr|scl'].recoveryStreak, 0)
+  assert.equal(st.events['azure|vultr|scl'].recoveryStreak, 1) // this round is itself clear
+})
+
+test('clear, gap, clear, clear recovers (two consecutive observed clears after a gap)', () => {
+  const st = fresh()
+  advanceState(st, [cand()], T('10:07'))
+  advanceState(st, [cand()], T('10:57'))
+  advanceState(st, [], T('11:47')) // clear (adjacent)
+  advanceState(st, [], T('13:27')) // gap -> streak restarts at 1
+  const r = advanceState(st, [], T('14:17')) // adjacent clear -> 2
+  assert.deepEqual(r.recovered, ['azure|vultr|scl'])
 })
 
 test('migration: old floored-bucket state cannot falsely confirm on a re-processed round', () => {
@@ -102,15 +112,36 @@ test('migration keeps a confirmed event active and requires fresh clear rounds',
     lastSlot: T('10:00'),
     events: { 'azure|vultr|scl': { firstSlot: T('09:00'), candidateStreak: 3, recoveryStreak: 1, confirmed: true, lastSlot: T('10:00'), last: {} } },
   })
-  let r = advanceState(st, [], T('10:27')) // first post-migration round: not adjacent
+  let r = advanceState(st, [], T('10:27')) // first post-migration round: counts as clear #1
   assert.deepEqual(r.recovered, [])
-  r = advanceState(st, [], T('11:17'))
-  assert.deepEqual(r.recovered, [])
-  r = advanceState(st, [], T('12:07'))
+  r = advanceState(st, [], T('11:17')) // adjacent clear #2
   assert.deepEqual(r.recovered, ['azure|vultr|scl'])
 })
 
 test('migrateState tolerates null / corrupt input', () => {
   assert.deepEqual(migrateState(null), { version: 2, lastSlot: null, events: {} })
   assert.equal(migrateState({}).version, 2)
+})
+
+test('migrateState discards malformed structured state instead of throwing later', () => {
+  for (const bad of [
+    { version: 2, lastSlot: null, events: { x: null } },
+    { version: 2, lastSlot: null, events: 'oops' },
+    { version: 2, lastSlot: null, events: [1, 2] },
+    { version: 2, lastSlot: 42, events: { a: 'str', b: [] } },
+    [],
+  ]) {
+    const st = migrateState(bad)
+    assert.equal(st.version, 2)
+    assert.equal(st.lastSlot, null)
+    assert.deepEqual(st.events, {})
+    assert.doesNotThrow(() => advanceState(st, [cand()], T('10:07')))
+  }
+})
+
+test('migrateState keeps well-formed events alongside dropped malformed ones', () => {
+  const ev = { firstSlot: T('09:00'), candidateStreak: 2, recoveryStreak: 0, confirmed: true, lastSlot: T('10:07'), last: {} }
+  const st = migrateState({ version: 2, lastSlot: T('10:07'), events: { good: ev, bad: null } })
+  assert.deepEqual(Object.keys(st.events), ['good'])
+  assert.equal(st.lastSlot, T('10:07'))
 })

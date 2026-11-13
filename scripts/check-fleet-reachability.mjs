@@ -217,8 +217,16 @@ function findCandidates(latest, eligible, frozenPairs) {
 // unconfirmed streaks restart from 1.
 const STATE_VERSION = 2
 export function migrateState(s) {
-  if (!s || typeof s !== 'object') return { version: STATE_VERSION, lastSlot: null, events: {} }
-  if (!s.events) s.events = {}
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return { version: STATE_VERSION, lastSlot: null, events: {} }
+  // Discard malformed structure rather than throwing later in advanceState.
+  const events = {}
+  if (s.events && typeof s.events === 'object' && !Array.isArray(s.events)) {
+    for (const [k, ev] of Object.entries(s.events)) {
+      if (ev && typeof ev === 'object' && !Array.isArray(ev)) events[k] = ev
+    }
+  }
+  s.events = events
+  if (typeof s.lastSlot !== 'string') s.lastSlot = null
   if (s.version !== STATE_VERSION) {
     s.lastSlot = null
     for (const ev of Object.values(s.events)) {
@@ -308,12 +316,13 @@ export function advanceState(state, candidates, slot) {
     }
     // decay events not seen this round. Recovery also requires CONSECUTIVE clear
     // rounds; a non-adjacent round is inconclusive (we don't know the missed
-    // round's state), so it RESETS the clear streak (clear, missed, clear must
-    // not recover) and the event stays active rather than being falsely cleared.
+    // round's state): this round is itself an observed clear round (streak
+    // restarts at 1), but clear, missed, clear must NOT recover; the event stays
+    // active until a second consecutive clear round arrives.
     for (const [key, ev] of Object.entries(state.events)) {
       if (candKeys.has(key)) continue
       ev.candidateStreak = 0
-      ev.recoveryStreak = adjacent ? (ev.recoveryStreak || 0) + 1 : 0
+      ev.recoveryStreak = adjacent ? (ev.recoveryStreak || 0) + 1 : 1
       if (ev.confirmed && adjacent && ev.recoveryStreak >= 2) {
         recovered.push(key)
         delete state.events[key]
