@@ -1,7 +1,7 @@
 // China mainland-reachability monitor.
 //
 // WHY: cloudping's China-mainland cells intermittently go all-blank from an AWS
-// origin for a single 30-min round while the Hong Kong controls stay healthy —
+// origin for a single probe round while the Hong Kong controls stay healthy —
 // a mainland-path connectivity failure that the PR #81/#82 diagnostics localized
 // to TCP connection establishment (DNS resolves, a raw SYN to a mainland IP
 // literal times out), with the responsible network SUSPECTED (GFW / transit /
