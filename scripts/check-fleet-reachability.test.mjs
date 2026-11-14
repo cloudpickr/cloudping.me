@@ -145,3 +145,28 @@ test('migrateState keeps well-formed events alongside dropped malformed ones', (
   assert.deepEqual(Object.keys(st.events), ['good'])
   assert.equal(st.lastSlot, T('10:07'))
 })
+
+import { isStaleSlot } from './check-fleet-reachability.mjs'
+
+test('isStaleSlot: only a bounded regression is stale', () => {
+  assert.ok(isStaleSlot(T('10:57'), T('10:07')))
+  assert.ok(!isStaleSlot(T('10:07'), T('10:57'))) // forward
+  assert.ok(!isStaleSlot(T('10:07'), T('10:07'))) // same round
+  assert.ok(!isStaleSlot(null, T('10:07')))
+  assert.ok(!isStaleSlot('2099-01-01T00:00:00.000Z', T('10:07'))) // corrupt/future lastSlot must not wedge
+})
+
+test('a stale older round is ignored and does not corrupt state', () => {
+  const st = fresh()
+  advanceState(st, [cand()], T('10:07'))
+  advanceState(st, [cand()], T('10:57')) // confirmed
+  advanceState(st, [], T('11:47')) // clear #1
+  const before = JSON.stringify(st)
+  const r = advanceState(st, [cand()], T('10:57')) // stale cache read of an old round
+  assert.equal(r.stale, true)
+  assert.equal(r.isNewSlot, false)
+  assert.equal(JSON.stringify(st), before)
+  // the real next round still counts as adjacent and recovers
+  const r2 = advanceState(st, [], T('12:37'))
+  assert.deepEqual(r2.recovered, ['azure|vultr|scl'])
+})

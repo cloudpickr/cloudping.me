@@ -286,9 +286,27 @@ export function isAdjacentSlot(prevSlot, slot) {
   return gap >= MIN_ADJACENT_GAP_MS && gap <= MAX_ADJACENT_GAP_MS
 }
 
+const STALE_WINDOW_MS = 6 * 60 * 60 * 1000
+export function isStaleSlot(lastSlot, slot) {
+  if (!lastSlot) return false
+  const a = Date.parse(lastSlot)
+  const b = Date.parse(slot)
+  if (Number.isNaN(a) || Number.isNaN(b)) return false
+  const regress = a - b
+  return regress > 0 && regress <= STALE_WINDOW_MS
+}
+
 // Advance event state for one round. Pure w.r.t. I/O (mutates `state`). Only
 // advances on a NEW slot, so repeated same-round runs don't inflate streaks.
 export function advanceState(state, candidates, slot) {
+  // Ignore a STALE round: a lagging CDN/cache read can serve an older round after
+  // a newer one was already processed. Accepting it would move lastSlot backwards,
+  // reset streaks, and make the next real read look "adjacent" (double count).
+  // Only regressions within STALE_WINDOW_MS count as stale so a corrupt/future
+  // lastSlot can't wedge the monitor forever.
+  if (isStaleSlot(state.lastSlot, slot)) {
+    return { isNewSlot: false, adjacent: false, stale: true, confirmed: [], recovered: [] }
+  }
   const isNewSlot = state.lastSlot !== slot
   const adjacent = isAdjacentSlot(state.lastSlot, slot)
   const candKeys = new Set(candidates.map((c) => c.key))

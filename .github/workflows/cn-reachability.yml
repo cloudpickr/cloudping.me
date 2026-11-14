@@ -169,16 +169,17 @@ jobs:
             --jq ".[] | select(.title==\"${title}\") | .number" | head -n1)"
           if [ -n "${existing}" ]; then
             # Several triggers (workflow_run, hourly backup cron, probe fallback cron)
-            # can evaluate the SAME published round; skip if the issue's latest report
-            # already covers this round, so one round yields one comment.
+            # can evaluate the SAME published round; skip if the issue already
+            # reports this round, so one round yields one comment.
             round_marker="$(printf '%s' "${body}" | grep -o '(round [^)]*)' | head -n1 || true)"
-            # Compare against the latest comment, or the issue body when nobody has
-            # commented yet (a freshly created issue already reports its round).
+            # Compare against the issue body plus the last few comments, so a human
+            # triage comment landing between two same-round evaluations can't hide
+            # the round we already reported (a fresh issue's body reports its round).
             last_comment="$(gh issue view "${existing}" --json body,comments \
-              --jq 'if (.comments | length) > 0 then .comments[-1].body else .body end // ""')"
+              --jq '([.body] + [.comments[-5:][]?.body]) | map(. // "") | join("\n")')"
             if [ -n "${round_marker}" ] && [ "${round_marker}" != "(round None)" ] \
               && [[ "${last_comment}" == *"${round_marker}"* ]]; then
-              echo "Latest comment on #${existing} already covers ${round_marker}; not duplicating."
+              echo "Issue #${existing} already reports ${round_marker}; not duplicating."
             else
               gh issue comment "${existing}" --body "${body}"
               echo "Refreshed existing issue #${existing}."
@@ -264,16 +265,17 @@ jobs:
             --jq ".[] | select(.title==\"${title}\") | .number" | head -n1)"
           if [ -n "${existing}" ]; then
             # Several triggers (workflow_run, hourly backup cron, probe fallback cron)
-            # can evaluate the SAME published round; skip if the issue's latest report
-            # already covers this round, so one round yields one comment.
+            # can evaluate the SAME published round; skip if the issue already
+            # reports this round, so one round yields one comment.
             round_marker="$(printf '%s' "${body}" | grep -o '(round [^)]*)' | head -n1 || true)"
-            # Compare against the latest comment, or the issue body when nobody has
-            # commented yet (a freshly created issue already reports its round).
+            # Compare against the issue body plus the last few comments, so a human
+            # triage comment landing between two same-round evaluations can't hide
+            # the round we already reported (a fresh issue's body reports its round).
             last_comment="$(gh issue view "${existing}" --json body,comments \
-              --jq 'if (.comments | length) > 0 then .comments[-1].body else .body end // ""')"
+              --jq '([.body] + [.comments[-5:][]?.body]) | map(. // "") | join("\n")')"
             if [ -n "${round_marker}" ] && [ "${round_marker}" != "(round None)" ] \
               && [[ "${last_comment}" == *"${round_marker}"* ]]; then
-              echo "Latest comment on #${existing} already covers ${round_marker}; not duplicating."
+              echo "Issue #${existing} already reports ${round_marker}; not duplicating."
             else
               gh issue comment "${existing}" --body "${body}"
               echo "Refreshed existing issue #${existing}."
