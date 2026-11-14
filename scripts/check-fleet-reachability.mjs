@@ -286,9 +286,28 @@ export function isAdjacentSlot(prevSlot, slot) {
   return gap >= MIN_ADJACENT_GAP_MS && gap <= MAX_ADJACENT_GAP_MS
 }
 
+// lastSlot more than this far ahead of the wall clock is implausible (corrupt
+// state / clock skew), so a slot behind it is NOT treated as stale.
+const FUTURE_TOLERANCE_MS = 60 * 60 * 1000
+export function isStaleSlot(lastSlot, slot, now = Date.now()) {
+  if (!lastSlot) return false
+  const a = Date.parse(lastSlot)
+  const b = Date.parse(slot)
+  if (Number.isNaN(a) || Number.isNaN(b)) return false
+  return b < a && a <= now + FUTURE_TOLERANCE_MS
+}
+
 // Advance event state for one round. Pure w.r.t. I/O (mutates `state`). Only
 // advances on a NEW slot, so repeated same-round runs don't inflate streaks.
-export function advanceState(state, candidates, slot) {
+export function advanceState(state, candidates, slot, now = Date.now()) {
+  // Ignore a STALE round: a lagging CDN/cache read (or a reset status branch) can
+  // serve an older round after a newer one was already processed. Accepting it
+  // would move lastSlot backwards, reset streaks, and let old data re-confirm a
+  // past outage. Any regression is stale as long as lastSlot is plausible (not in
+  // the future), so a corrupt/future lastSlot can't wedge the monitor.
+  if (isStaleSlot(state.lastSlot, slot, now)) {
+    return { isNewSlot: false, adjacent: false, stale: true, confirmed: [], recovered: [] }
+  }
   const isNewSlot = state.lastSlot !== slot
   const adjacent = isAdjacentSlot(state.lastSlot, slot)
   const candKeys = new Set(candidates.map((c) => c.key))
@@ -362,7 +381,7 @@ async function main() {
 
   const candidates = findCandidates(latest, eligible, frozenPairs)
   const candByKey = new Map(candidates.map((c) => [c.key, c]))
-  const { isNewSlot, confirmed, recovered } = advanceState(state, candidates, slot)
+  const { isNewSlot, confirmed, recovered, stale } = advanceState(state, candidates, slot)
 
   const activeConfirmed = Object.entries(state.events)
     .filter(([, ev]) => ev.confirmed)
@@ -373,12 +392,15 @@ async function main() {
     roundAt: latest.at || null,
     slot,
     newSlot: isNewSlot,
-    candidatesThisRound: candidates,
+    // A rejected stale round is reported as such: no candidates from its data and
+    // no issue (we must not attribute old data to this evaluation).
+    stale: !!stale,
+    candidatesThisRound: stale ? [] : candidates,
     newlyConfirmed: confirmed.map((k) => candByKey.get(k) || { key: k }),
     recovered,
     activeConfirmed,
     // Only CONFIRMED events warrant an issue — single-round blips self-heal.
-    hasProblem: activeConfirmed.length > 0,
+    hasProblem: !stale && activeConfirmed.length > 0,
   }
 
   if (persist) writeFileSync(STATE_PATH, JSON.stringify(state))
@@ -390,6 +412,10 @@ async function main() {
 
   console.log('# Fleet reachability monitor\n')
   console.log(`round ${result.roundAt} (slot ${slot}, newSlot=${isNewSlot})`)
+  if (stale) {
+    console.log('\nStale round (older than the last processed round): ignored, no state change, no issue.')
+    return
+  }
   console.log(`eligible origins: ${[...eligible.keys()].length}`)
   if (candidates.length === 0) {
     console.log('\nNo cross-fleet asymmetry candidates this round.')

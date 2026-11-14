@@ -145,3 +145,49 @@ test('migrateState keeps well-formed events alongside dropped malformed ones', (
   assert.deepEqual(Object.keys(st.events), ['good'])
   assert.equal(st.lastSlot, T('10:07'))
 })
+
+import { isStaleSlot } from './check-fleet-reachability.mjs'
+
+const NOW = Date.parse('2026-11-14T00:00:00.000Z')
+
+test('isStaleSlot: any regression is stale while lastSlot is plausible', () => {
+  assert.ok(isStaleSlot(T('10:57'), T('10:07'), NOW))
+  assert.ok(isStaleSlot(T('17:00'), T('10:00'), NOW)) // >6h back is still stale
+  assert.ok(!isStaleSlot(T('10:07'), T('10:57'), NOW)) // forward
+  assert.ok(!isStaleSlot(T('10:07'), T('10:07'), NOW)) // same round
+  assert.ok(!isStaleSlot(null, T('10:07'), NOW))
+  assert.ok(!isStaleSlot('2099-01-01T00:00:00.000Z', T('10:07'), NOW)) // corrupt/future lastSlot must not wedge
+})
+
+test('hours-old replay after a newer round cannot re-confirm an old outage', () => {
+  const st = fresh()
+  advanceState(st, [], T('17:00'), NOW)
+  advanceState(st, [cand()], T('10:00'), NOW) // replayed old rounds
+  const r = advanceState(st, [cand()], T('10:50'), NOW)
+  assert.equal(r.stale, true)
+  assert.deepEqual(r.confirmed, [])
+  assert.equal(st.lastSlot, T('17:00'))
+  assert.deepEqual(st.events, {})
+})
+
+test('corrupt future lastSlot does not wedge: real rounds are accepted', () => {
+  const st = { version: 2, lastSlot: '2099-01-01T00:00:00.000Z', events: {} }
+  const r = advanceState(st, [cand()], T('10:07'), NOW)
+  assert.equal(r.stale, undefined)
+  assert.equal(st.lastSlot, T('10:07'))
+})
+
+test('a stale older round is ignored and does not corrupt state', () => {
+  const st = fresh()
+  advanceState(st, [cand()], T('10:07'))
+  advanceState(st, [cand()], T('10:57')) // confirmed
+  advanceState(st, [], T('11:47')) // clear #1
+  const before = JSON.stringify(st)
+  const r = advanceState(st, [cand()], T('10:57'), NOW) // stale cache read of an old round
+  assert.equal(r.stale, true)
+  assert.equal(r.isNewSlot, false)
+  assert.equal(JSON.stringify(st), before)
+  // the real next round still counts as adjacent and recovers
+  const r2 = advanceState(st, [], T('12:37'))
+  assert.deepEqual(r2.recovered, ['azure|vultr|scl'])
+})
